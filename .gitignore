@@ -1,47 +1,126 @@
+# Dependencies
 node_modules/
 **/node_modules/
-server/node_modules/
-web/node_modules/
+.pnp.*
+.npm/
+.pnpm-store/
+.yarn/*
+!.yarn/patches/
+!.yarn/plugins/
+!.yarn/releases/
+!.yarn/sdks/
+!.yarn/versions/
+
+# Build output and generated app bundles
+dist/
+build/
+out/
 web/dist/
+server/dist/
+extension/dist/
+*.tsbuildinfo
+
+# Framework, bundler, and tool caches
+.cache/
+.parcel-cache/
+.turbo/
+.vite/
+.vitest/
+.eslintcache
+.next/
+.nuxt/
+.svelte-kit/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Test and coverage artifacts
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+*.lcov
 
 # Local secrets
 .env
 .env.*
-.env.local
-server/.env
-server/.env.*
-server/.env.local
-web/.env
-web/.env.*
-web/.env.local
-extension/.env
-extension/.env.*
-extension/.env.local
-!.env.example
-!server/.env.example
-!web/.env.example
-!extension/.env.example
+**/.env
+**/.env.*
+.envrc
+**/.envrc
+!*.env.example
+!**/.env.example
+!*.env.sample
+!**/.env.sample
+!*.env.template
+!**/.env.template
 
-# Local user data and generated runtime files
+# Local user data, backups, and runtime files
 server/data.json
-server/*.local.json
-server/backups/
+*.local.json
+**/*.local.json
+backups/
+**/backups/
+exports/
+**/exports/
+uploads/
+**/uploads/
+downloads/
+**/downloads/
+tmp/
+temp/
+**/tmp/
+**/temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+*.rej
+*.pid
+*.pid.lock
+*.db
+*.sqlite
+*.sqlite3
+*.mindweaver-backup.json
+
+# Logs
 *.log
 logs/
+**/logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# OS/editor noise
+# Local deployment metadata
+.vercel/
+.netlify/
+
+# OS and editor noise
 .DS_Store
 Thumbs.db
+desktop.ini
+ehthumbs.db
 .vscode/
 .idea/
+.fleet/
+.history/
+.codex/
+*.swp
+*.swo
+*~
 
 # Private key/certificate material
 *.pem
 *.key
 *.crt
+*.cer
+*.csr
 *.p12
 *.pfx
+
+# Chrome extension packaging artifacts
+*.crx
+extension/*.zip
+extension/*.pem
