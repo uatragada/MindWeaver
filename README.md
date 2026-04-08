@@ -79,6 +79,20 @@ The extension no longer continuously tracks browsing. It injects the page extrac
 
 You can also highlight text on a page, right-click, and choose "Save selection to MindWeaver" to add that highlight as direct evidence.
 
+### On-Demand Save Model
+
+MindWeaver is intentionally not a continuous browsing tracker. The extension does not register a content script that runs across every page. Instead, the popup asks Chrome to inject the extractor into the active tab only after you click "Save Current Page".
+
+The save flow is:
+
+1. Open a useful source page.
+2. Click the MindWeaver extension icon.
+3. Click "Save Current Page".
+4. The extension creates a local map if needed, extracts readable text from that tab, and sends it to `http://localhost:3001`.
+5. The web app shows the new source as evidence in the graph after ingestion.
+
+Context-menu highlights follow the same explicit model: selected text is saved only when you right-click and choose "Save selection to MindWeaver".
+
 ## Tests
 
 Run the backend smoke tests from the repo root:
@@ -97,7 +111,7 @@ The current tests cover:
 
 - session creation,
 - ingest dedupe,
-- session-scoped graph responses.
+- session-scoped graph responses,
 - graph health, demo maps, export, progress, search, chat, pruning, relationships, bulk import, highlight import, backup/restore, node cleanup, source removal, and production static serving.
 
 You can also replay a small fixture set against the current pipeline with:

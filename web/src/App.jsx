@@ -922,7 +922,7 @@ export default function App() {
             <p className="panel-title">MindWeaver</p>
             <h1>Build a knowledge map from what you are actually learning.</h1>
             <p>
-              Start a session, capture pages with the extension, or paste notes and transcripts directly.
+              Start a map, save the current page from the extension, or paste notes and transcripts directly.
               MindWeaver turns the work into a source-grounded map you can review, quiz, and improve.
             </p>
             <form className="start-form" onSubmit={handleCreateSession}>

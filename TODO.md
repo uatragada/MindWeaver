@@ -33,14 +33,14 @@ The remaining intentionally deferred scope is collaboration and hosted team/SaaS
 
 ## Roadmap Principles
 
-- Build from reliable capture to reliable understanding.
+- Build from intentional, reliable capture to reliable understanding.
 - Favor explainable graph edges over opaque AI output.
 - Keep humans in the loop for correction, verification, and trust.
 - Ship milestones that are useful on their own.
 
 ## Phase 1: Harden The MVP
 
-Outcome: the current extension -> server -> graph flow works consistently enough to demo and publish safely.
+Outcome: the current explicit extension save -> server -> graph flow works consistently enough to demo and publish safely.
 
 - [x] Add a root README with setup, architecture, and run instructions.
 - [x] Add top-level scripts or a simple dev runner so the app can be started without manual multi-terminal setup.
@@ -100,7 +100,7 @@ Definition of done:
 - Verification changes recommendations and confidence in visible ways.
 - The product answers "what do I know, what am I missing, and what should I do next?"
 
-## Phase 4: Expand Capture Beyond Web Pages
+## Phase 4: Expand Intentional Capture Beyond Web Pages
 
 Outcome: the system becomes a true knowledge intake layer, not just a browser session logger.
 
