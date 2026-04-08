@@ -137,13 +137,15 @@ Definition of done:
 
 Outcome: the product grows from personal learning into team onboarding and research mapping.
 
-- [ ] Add authentication and user accounts.
-- [ ] Add shared workspaces and team graphs.
-- [ ] Add permissions for private vs shared evidence.
-- [ ] Add onboarding packs for new hires or new domains.
-- [ ] Add expertise maps that show who knows what.
-- [ ] Add shared learning goals and recommended pathways.
-- [ ] Add export and reporting for research teams.
+These items are deferred GitHub issues for the hosted/team version:
+
+- [ ] [Add authentication and user accounts](https://github.com/uatragada/MindWeaver/issues/1)
+- [ ] [Add shared workspaces and team graphs](https://github.com/uatragada/MindWeaver/issues/2)
+- [ ] [Add permissions for private vs shared evidence](https://github.com/uatragada/MindWeaver/issues/3)
+- [ ] [Add onboarding packs for new hires or new domains](https://github.com/uatragada/MindWeaver/issues/4)
+- [ ] [Add expertise maps that show who knows what](https://github.com/uatragada/MindWeaver/issues/5)
+- [ ] [Add shared learning goals and recommended pathways](https://github.com/uatragada/MindWeaver/issues/6)
+- [ ] [Add export and reporting for research teams](https://github.com/uatragada/MindWeaver/issues/7)
 
 Definition of done:
 
