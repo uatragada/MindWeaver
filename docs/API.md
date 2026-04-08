@@ -1,0 +1,199 @@
+# API Reference
+
+The local API runs at `http://localhost:3001` in development and production-style local mode.
+
+All request and response bodies are JSON unless noted otherwise.
+
+## Health And Local Workspace
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/health` | Returns server health, OpenAI configuration status, and content limits. |
+| `GET` | `/api/workspaces` | Returns local workspace records. |
+| `POST` | `/api/workspaces` | Creates a local workspace placeholder. |
+
+## Backup And Restore
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/backup` | Downloads the full local MindWeaver data payload. |
+| `POST` | `/api/restore` | Replaces local data with a MindWeaver backup when `confirm: true` is provided. |
+
+Restore body:
+
+```json
+{
+  "confirm": true,
+  "backup": {
+    "app": "MindWeaver",
+    "version": 1,
+    "data": {}
+  }
+}
+```
+
+## Sessions And Goals
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/sessions?limit=8` | Lists recent sessions with summary counts. |
+| `POST` | `/api/sessions` | Creates a new learning session and optional goal node. |
+| `POST` | `/api/demo-session` | Creates a prebuilt demo map. |
+| `POST` | `/api/goals` | Adds or updates a session goal. |
+| `GET` | `/api/goals/:sessionId` | Lists goals for a session. |
+| `POST` | `/api/sessions/:id/end` | Marks a session ended. |
+| `DELETE` | `/api/sessions/:id` | Deletes a local session and session-scoped graph data. |
+
+Create session body:
+
+```json
+{
+  "goal": "Build a practical mental model of event-driven systems"
+}
+```
+
+## Sources And Imports
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/ingest` | Ingests a saved web page from the extension. |
+| `POST` | `/api/import` | Imports manual notes, PDF text, transcripts, Markdown, bookmarks, docs/repo excerpts, or highlights. |
+| `POST` | `/api/import-bulk` | Imports multiple source items at once. |
+| `DELETE` | `/api/sessions/:sessionId/artifacts/:artifactId` | Removes one source artifact and detaches it from node evidence. |
+
+Allowed `sourceType` values:
+
+- `page`
+- `note`
+- `pdf`
+- `youtube`
+- `transcript`
+- `doc`
+- `markdown`
+- `bookmark`
+- `repo`
+- `highlight`
+
+Single import body:
+
+```json
+{
+  "sessionId": "session-id",
+  "sourceType": "note",
+  "title": "Reliable consumers note",
+  "url": "https://example.com/optional-source",
+  "excerpt": "Optional short summary",
+  "content": "Source text to classify and attach to the graph."
+}
+```
+
+The server accepts source content up to 80,000 characters. OpenAI classification reads up to 16,000 characters per source.
+
+## Graph
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/graph/:sessionId` | Returns session-scoped nodes, edges, artifacts, review queue, recommendations, health, and study plan. |
+| `GET` | `/api/review/:sessionId` | Returns the current review queue. |
+| `GET` | `/api/recommendations/:sessionId` | Returns next-step recommendations. |
+| `GET` | `/api/progress/:sessionId` | Returns session and long-term progress summaries. |
+| `GET` | `/api/search/:sessionId?q=query` | Searches concepts, goals, and evidence for a session. |
+| `GET` | `/api/sessions/:id/export?format=json` | Exports a map as JSON. |
+| `GET` | `/api/sessions/:id/export?format=markdown` | Exports a map as Markdown. |
+
+## Node And Edge Cleanup
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/nodes/:id/review` | Approves or rejects a node for a session. |
+| `PATCH` | `/api/nodes/:id` | Edits a node label, description, summary, or mastery state. |
+| `POST` | `/api/nodes/:id/merge` | Merges the source node into a target node for the session. |
+| `POST` | `/api/edges` | Adds a manual relationship between two nodes. |
+| `POST` | `/api/edges/:key/review` | Approves or rejects a graph edge for a session. |
+| `POST` | `/api/prune` | Finds or removes low-confidence concepts with no direct evidence. |
+
+Node review body:
+
+```json
+{
+  "sessionId": "session-id",
+  "action": "approve"
+}
+```
+
+Node edit body:
+
+```json
+{
+  "sessionId": "session-id",
+  "label": "consumer lag monitoring",
+  "description": "Tracks delayed consumers.",
+  "summary": "Use consumer lag to notice when downstream systems fall behind.",
+  "masteryState": "verified"
+}
+```
+
+Merge body:
+
+```json
+{
+  "sessionId": "session-id",
+  "targetId": "concept:consumer lag"
+}
+```
+
+Manual relationship body:
+
+```json
+{
+  "sessionId": "session-id",
+  "sourceId": "concept:producer",
+  "targetId": "concept:consumer",
+  "type": "related",
+  "label": "communicates with"
+}
+```
+
+## Learning And Assistant Features
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/gaps` | Runs gap analysis for a session goal and can create missing-concept nodes. |
+| `POST` | `/api/quiz` | Generates a spaced-review quiz for review-worthy concepts. |
+| `POST` | `/api/verify` | Applies quiz results to confidence and review scheduling. |
+| `POST` | `/api/chat` | Answers a source-grounded question against the graph. |
+| `GET` | `/api/summary/:sessionId` | Generates and stores a learning summary. |
+| `POST` | `/api/intersect` | Finds a bridge between two graph nodes. |
+| `POST` | `/api/learn-more` | Generates a short explanation for a selected node. |
+
+Gap analysis body:
+
+```json
+{
+  "sessionId": "session-id",
+  "goalId": "goal-node-id"
+}
+```
+
+Quiz verification body:
+
+```json
+{
+  "sessionId": "session-id",
+  "conceptIds": ["concept:idempotency"],
+  "correct": true
+}
+```
+
+Chat body:
+
+```json
+{
+  "sessionId": "session-id",
+  "question": "What should I study next?"
+}
+```
+
+## OpenAI Dependency
+
+OpenAI-backed endpoints use the server-side `OPENAI_API_KEY` from `server/.env.local`. Some routes provide fallback behavior when OpenAI is not configured, but classification, quiz generation, gap analysis, chat enrichment, and explanations are most useful with an API key.

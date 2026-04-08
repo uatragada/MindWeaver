@@ -1,46 +1,52 @@
 # MindWeaver
 
-MindWeaver turns intentional saves from your browsing session into a living knowledge graph. The browser extension logs a page only when you click "Save Current Page" or save a highlight, the local server classifies the source into goals, domains, skills, and concepts, and the web app lets you review low-confidence ideas, run gap analysis, and quiz yourself to improve graph confidence over time.
+MindWeaver is a local-first knowledge mapping app. You intentionally save a page or selected highlight from the Chrome extension, the local server classifies that source into a session-scoped graph, and the web app helps you review, clean up, quiz, and export the resulting map.
 
-## What You Can Do
+It is built for personal learning workflows first: capture evidence on demand, keep provenance visible, let humans correct the graph, and use AI as a classifier/coach rather than an invisible background tracker.
 
-- save source pages on demand during a learning session,
-- build a session-scoped knowledge graph,
-- review and approve or reject AI-added concepts,
-- run gap analysis against a session goal,
-- generate quizzes that feed verification back into concept confidence,
-- import manual notes, PDF text, and transcript excerpts into the same graph,
-- surface next-step recommendations based on gaps, low evidence, and spaced review,
-- follow a generated short study plan and map-health score,
-- ask source-grounded questions against the graph,
-- search concepts, goals, and evidence,
-- bulk import Markdown notes or reading-list extracts,
-- prune low-confidence concepts with no evidence,
-- add and review relationships between concepts,
-- edit concept labels, descriptions, summaries, and mastery states,
-- merge duplicate nodes and remove bad source evidence,
-- save selected browser text as highlight evidence,
-- try a prebuilt demo map before installing or using the extension,
-- export a saved map as Markdown or JSON for sharing and notes,
-- download and restore a full local backup of the MindWeaver data store.
+## Current Product
 
-## Project Structure
+- On-demand Chrome extension source saving with no continuous page tracking.
+- Session-scoped knowledge graphs built from goals, domains, skills, concepts, sources, and relationships.
+- Manual imports for notes, PDF text, transcripts, Markdown, bookmarks, repository/docs excerpts, and highlights.
+- Review queue, approve/reject actions, node editing, duplicate merging, edge review, and graph pruning.
+- Gap analysis, study plan generation, spaced-review quiz loop, progress reporting, and source-grounded graph chat.
+- Local backup/restore plus Markdown/JSON map export.
+- Production-style local run path that serves the built web app from the Express server.
 
-- `extension/`: Chrome extension for starting a session and saving the current page or selected highlights on demand.
-- `server/`: Express API, lowdb storage, OpenAI-powered ingestion and learning endpoints.
-- `web/`: React graph UI with review queue, gap analysis, quiz loop, and inspector.
+## Repo Map
 
-## Local Setup
+- [`extension/`](extension/README.md): Chrome extension for saving the current page or selected highlights on demand.
+- [`server/`](server): Express API, LowDB persistence, OpenAI-backed classification, and learning endpoints.
+- [`web/`](web): Vite + React graph UI.
+- [`scripts/`](scripts): local development helpers.
+- [`docs/`](docs/README.md): architecture, API, security, product, and development documentation.
+- [`TODO.md`](TODO.md): roadmap and linked GitHub issues for deferred team/org work.
 
-1. Install dependencies in `server/` and `web/` if they are not already installed.
-2. Create a local secret file at `server/.env.local`.
-3. Add `OPENAI_API_KEY=your_key_here` to that file.
+## Quick Start
 
-You already have a safe template in [server/.env.example](G:/Projects/MindWeaver/server/.env.example).
+Install dependencies:
 
-## One-Command Development
+```bash
+npm --prefix server install
+npm --prefix web install
+```
 
-Run this from the repo root:
+Create a local secret file:
+
+```bash
+copy server\.env.example server\.env.local
+```
+
+Then edit `server/.env.local` and set:
+
+```bash
+OPENAI_API_KEY=your_key_here
+```
+
+`server/.env.local` is git-ignored. Do not put real API keys in tracked files.
+
+Start the development stack:
 
 ```bash
 npm run dev
@@ -48,54 +54,51 @@ npm run dev
 
 That starts:
 
-- the API server on `http://localhost:3001`
-- the web app on `http://localhost:5197`
+- API server: `http://localhost:3001`
+- Web app: `http://localhost:5197`
 
 ## Production-Style Local Run
 
-Run this from the repo root:
+Use this when showing the product or testing the single-server path:
 
 ```bash
 npm run build
 npm run start
 ```
 
-Or on Windows, double-click [start-production.bat](G:/Projects/MindWeaver/start-production.bat).
+Or double-click [`start-production.bat`](start-production.bat) on Windows.
 
-That builds the web app and serves the full product from the local server at `http://127.0.0.1:3001`. This is the preferred mode when you are showing the product to someone or testing the full flow without Vite.
+After build, the Express server serves the web app from `web/dist` at `http://127.0.0.1:3001`.
 
 ## Load The Extension
 
-1. Open Chrome extensions.
+1. Open `chrome://extensions`.
 2. Enable Developer Mode.
-3. Load `extension/` as an unpacked extension.
-4. Optionally add a goal in the popup.
-5. Use the popup's "Open MindWeaver" button to open the web app for the current session.
-6. Click "Save Current Page" whenever you want the active tab added to the graph.
+3. Click "Load unpacked".
+4. Select the [`extension`](extension) folder.
+5. Run the MindWeaver server locally.
+6. Click the MindWeaver extension icon.
+7. Optionally enter a learning goal.
+8. Click "Save Current Page" on pages you want in the graph.
 
-The popup opens the Vite dev app at `http://localhost:5197` when available, then falls back to the production-style server at `http://localhost:3001`.
+The extension injects its extractor only after you click "Save Current Page". It sends title, URL, meta keywords when present, excerpt, and up to 16,000 characters of readable page text to `http://localhost:3001`. It skips localhost, non-web protocols, password pages, and common account or financial pages.
 
-The extension no longer continuously tracks browsing. It injects the page extractor only after you click "Save Current Page", then sends page title, URL, excerpt, and up to 16,000 characters of readable page text to your local server. It skips localhost, non-web protocols, password/login pages, and common account/financial pages.
+You can also right-click selected text and choose "Save selection to MindWeaver" to add a highlight as direct evidence.
 
-You can also highlight text on a page, right-click, and choose "Save selection to MindWeaver" to add that highlight as direct evidence.
+## Product Loop
 
-### On-Demand Save Model
+1. Start or open a knowledge map.
+2. Save a useful source page or selected highlight from the extension.
+3. Import notes, transcripts, docs, or Markdown directly in the web app when needed.
+4. Review low-confidence concepts and reject bad classifier output.
+5. Edit labels/summaries, merge duplicates, remove weak evidence, and approve trustworthy relationships.
+6. Run gap analysis and generate a quiz to update confidence.
+7. Ask source-grounded questions against the graph.
+8. Export Markdown/JSON or download a full local backup.
 
-MindWeaver is intentionally not a continuous browsing tracker. The extension does not register a content script that runs across every page. Instead, the popup asks Chrome to inject the extractor into the active tab only after you click "Save Current Page".
+## Verification
 
-The save flow is:
-
-1. Open a useful source page.
-2. Click the MindWeaver extension icon.
-3. Click "Save Current Page".
-4. The extension creates a local map if needed, extracts readable text from that tab, and sends it to `http://localhost:3001`.
-5. The web app shows the new source as evidence in the graph after ingestion.
-
-Context-menu highlights follow the same explicit model: selected text is saved only when you right-click and choose "Save selection to MindWeaver".
-
-## Tests
-
-Run the backend smoke tests from the repo root:
+Run the backend test suite:
 
 ```bash
 npm run test
@@ -107,38 +110,22 @@ Run the broader local readiness check:
 npm run check
 ```
 
-The current tests cover:
-
-- session creation,
-- ingest dedupe,
-- session-scoped graph responses,
-- graph health, demo maps, export, progress, search, chat, pruning, relationships, bulk import, highlight import, backup/restore, node cleanup, source removal, and production static serving.
-
-You can also replay a small fixture set against the current pipeline with:
+Replay sample imports through the pipeline:
 
 ```bash
 npm run eval:fixtures
 ```
 
-## Product Loop
+## More Documentation
 
-1. Optionally set a session goal.
-2. Visit pages worth learning from.
-3. Click "Save Current Page" for sources you want in the graph.
-4. Open the graph UI.
-5. Review low-confidence concepts.
-6. Run gap analysis to see what you are missing.
-7. Generate a quiz and feed results back into confidence.
-8. Ask the graph assistant or generate a learning summary.
-9. Clean up the graph by editing labels, merging duplicates, and removing weak source evidence.
-10. Prune weak concepts, add relationships, download a backup, or export Markdown/JSON when you want to save or share the learning map.
+- [Development Guide](docs/DEVELOPMENT.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [API Reference](docs/API.md)
+- [Security And Privacy](docs/SECURITY.md)
+- [Product Notes](docs/PRODUCT.md)
+- [Extension README](extension/README.md)
+- [Roadmap](TODO.md)
 
-## Local-First Production Boundary
+## Production Boundary
 
-MindWeaver is productionized here as a local-first personal learning product. It includes local backup/restore and workspace/user foundations, but it does not pretend to be a hosted multi-tenant SaaS. If you want to deploy it publicly for teams, the next production layer should be real authentication, encrypted multi-user storage, and server-side authorization in front of the existing workspace model.
-
-If you want to evaluate the product quickly, open the web app and use "Try A Demo Map" on the landing page.
-
-## Roadmap
-
-The longer roadmap is tracked in [TODO.md](G:/Projects/MindWeaver/TODO.md).
+MindWeaver is productionized as a local-first personal learning product. It includes local user/workspace foundations, but it is not yet a hosted multi-tenant SaaS. The deferred team/org roadmap issues track auth, permissions, shared graphs, onboarding packs, expertise maps, shared goals, and research-team reporting.
