@@ -6,7 +6,7 @@ This roadmap turns the current prototype into a usable product in stages. The go
 
 MindWeaver should become a personal learning system that:
 
-- captures what a user studies across the web,
+- saves intentionally chosen pages and highlights from across the web,
 - organizes that material into a trustworthy knowledge graph,
 - measures what the user understands,
 - recommends what to learn next,
@@ -22,7 +22,7 @@ Hosted team/SaaS capabilities are intentionally deferred rather than faked in th
 
 Today the repo has:
 
-- a browser extension that captures page data during a session,
+- a browser extension that saves page data only when the user clicks the popup action or saves a selected highlight,
 - a local Express server that classifies pages into graph nodes using OpenAI,
 - a graph viewer that visualizes nodes and evidence,
 - production safety controls for backup, restore, deletion, and local source cleanup,
@@ -82,7 +82,7 @@ Definition of done:
 
 ## Phase 3: Turn It Into A Learning Product
 
-Outcome: MindWeaver moves from passive capture to active mastery tracking.
+Outcome: MindWeaver moves from intentional capture to active mastery tracking.
 
 - [x] Connect session goals to actual graph planning and recommendations.
 - [x] Build a gap analysis UI on top of the existing `/api/gaps` endpoint.
@@ -114,7 +114,7 @@ Outcome: the system becomes a true knowledge intake layer, not just a browser se
 Definition of done:
 
 - The graph can be built from multiple learning surfaces, not only visited pages.
-- Users can intentionally add high-quality evidence instead of relying only on passive capture.
+- Users can intentionally add high-quality evidence instead of relying on background capture.
 
 ## Phase 5: Add Assistant And Memory Features
 

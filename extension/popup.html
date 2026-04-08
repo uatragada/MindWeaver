@@ -3,23 +3,25 @@
   <head>
     <meta charset="utf-8" />
     <style>
-      body { font-family: system-ui; margin: 14px; width: 300px; background: #0b1525; color: #e7ecf5; }
+      body { font-family: system-ui; margin: 14px; width: 320px; background: #0b1525; color: #e7ecf5; }
       button { width: 100%; padding: 10px; margin: 6px 0; border: 0; border-radius: 12px; font-weight: 700; }
       button.primary { background: #ffb067; color: #1b130c; }
       button.secondary { background: rgba(124, 225, 255, 0.18); color: #e7ecf5; }
+      button:disabled { opacity: 0.65; cursor: wait; }
       .row { margin: 8px 0; font-size: 12px; color: #97a4ba; line-height: 1.4; }
-      input { width: 100%; padding: 8px; }
+      input { width: 100%; padding: 8px; box-sizing: border-box; border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.07); color: #e7ecf5; }
       h3 { margin: 0 0 10px; }
     </style>
   </head>
   <body>
-    <h3>MindWeaver Capture</h3>
+    <h3>MindWeaver</h3>
     <div class="row" id="status">Status: …</div>
     <div class="row" id="lastCapture">Last capture: …</div>
     <input id="goal" placeholder="Optional goal (e.g., Learn RL)" />
-    <button id="toggle" class="primary">Start</button>
+    <button id="capture" class="primary">Save Current Page</button>
+    <button id="toggle" class="secondary">Start New Map</button>
     <button id="open" class="secondary">Open MindWeaver</button>
-    <div class="row">When capture is on, MindWeaver sends page title, URL, excerpt, and up to 16k characters of readable text to your local server. It skips localhost, login/password, and common financial/account pages.</div>
+    <div class="row">MindWeaver only saves a page when you click "Save Current Page" or save a selected highlight from the context menu. It sends page title, URL, excerpt, and up to 16k characters of readable text to your local server, while skipping localhost, login/password, and common financial/account pages.</div>
     <script src="popup.js"></script>
   </body>
 </html>

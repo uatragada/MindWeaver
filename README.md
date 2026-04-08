@@ -1,10 +1,10 @@
 # MindWeaver
 
-MindWeaver turns a browsing session into a living knowledge graph. The browser extension captures pages you study, the local server classifies them into goals, domains, skills, and concepts, and the web app lets you review low-confidence ideas, run gap analysis, and quiz yourself to improve graph confidence over time.
+MindWeaver turns intentional saves from your browsing session into a living knowledge graph. The browser extension logs a page only when you click "Save Current Page" or save a highlight, the local server classifies the source into goals, domains, skills, and concepts, and the web app lets you review low-confidence ideas, run gap analysis, and quiz yourself to improve graph confidence over time.
 
 ## What You Can Do
 
-- capture source pages during a learning session,
+- save source pages on demand during a learning session,
 - build a session-scoped knowledge graph,
 - review and approve or reject AI-added concepts,
 - run gap analysis against a session goal,
@@ -26,7 +26,7 @@ MindWeaver turns a browsing session into a living knowledge graph. The browser e
 
 ## Project Structure
 
-- `extension/`: Chrome extension for starting a session and capturing page data.
+- `extension/`: Chrome extension for starting a session and saving the current page or selected highlights on demand.
 - `server/`: Express API, lowdb storage, OpenAI-powered ingestion and learning endpoints.
 - `web/`: React graph UI with review queue, gap analysis, quiz loop, and inspector.
 
@@ -69,12 +69,13 @@ That builds the web app and serves the full product from the local server at `ht
 1. Open Chrome extensions.
 2. Enable Developer Mode.
 3. Load `extension/` as an unpacked extension.
-4. Start a session from the popup.
+4. Optionally add a goal in the popup.
 5. Use the popup's "Open MindWeaver" button to open the web app for the current session.
+6. Click "Save Current Page" whenever you want the active tab added to the graph.
 
 The popup opens the Vite dev app at `http://localhost:5197` when available, then falls back to the production-style server at `http://localhost:3001`.
 
-The extension sends page title, URL, excerpt, and up to 16,000 characters of readable page text to your local server while capture is on. It skips localhost, non-web protocols, password/login pages, and common account/financial pages.
+The extension no longer continuously tracks browsing. It injects the page extractor only after you click "Save Current Page", then sends page title, URL, excerpt, and up to 16,000 characters of readable page text to your local server. It skips localhost, non-web protocols, password/login pages, and common account/financial pages.
 
 You can also highlight text on a page, right-click, and choose "Save selection to MindWeaver" to add that highlight as direct evidence.
 
@@ -107,9 +108,9 @@ npm run eval:fixtures
 
 ## Product Loop
 
-1. Start a session with a goal.
+1. Optionally set a session goal.
 2. Visit pages worth learning from.
-3. Let the extension ingest them into the local server.
+3. Click "Save Current Page" for sources you want in the graph.
 4. Open the graph UI.
 5. Review low-confidence concepts.
 6. Run gap analysis to see what you are missing.

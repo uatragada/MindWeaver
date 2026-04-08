@@ -1,5 +1,6 @@
 const statusEl = document.getElementById("status");
 const toggleBtn = document.getElementById("toggle");
+const captureBtn = document.getElementById("capture");
 const goalEl = document.getElementById("goal");
 const openBtn = document.getElementById("open");
 const lastCaptureEl = document.getElementById("lastCapture");
@@ -33,11 +34,29 @@ async function pickWebUrl() {
 async function refreshUI() {
   const { sessionId, isOn, goal, lastCaptureAt, lastCaptureTitle, lastCaptureStatus, lastCaptureMessage } = await getState();
   goalEl.value = goal || "";
-  statusEl.textContent = `Status: ${isOn ? "ON" : "OFF"}${sessionId ? ` (session ${sessionId})` : ""}`;
-  toggleBtn.textContent = isOn ? "Stop" : "Start";
+  statusEl.textContent = `Map: ${isOn ? "active" : "not active"}${sessionId ? ` (session ${sessionId})` : ""}`;
+  toggleBtn.textContent = isOn ? "End Current Map" : "Start New Map";
+  captureBtn.disabled = false;
   lastCaptureEl.textContent = lastCaptureAt
-    ? `Last capture: ${lastCaptureStatus} - ${lastCaptureTitle || lastCaptureMessage || new Date(lastCaptureAt).toLocaleTimeString()}`
-    : "Last capture: none yet";
+    ? `Last save: ${lastCaptureStatus} - ${lastCaptureTitle || lastCaptureMessage || new Date(lastCaptureAt).toLocaleTimeString()}`
+    : "Last save: none yet";
+}
+
+async function createSessionIfNeeded() {
+  const { sessionId, isOn } = await getState();
+  if (isOn && sessionId) return sessionId;
+
+  const goal = goalEl.value.trim();
+  const r = await fetch("http://localhost:3001/api/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal: goal || null })
+  });
+
+  if (!r.ok) throw new Error("Could not create a MindWeaver session.");
+  const s = await r.json();
+  await setState({ sessionId: s.id, isOn: true, goal: goal || null });
+  return s.id;
 }
 
 toggleBtn.addEventListener("click", async () => {
@@ -45,15 +64,8 @@ toggleBtn.addEventListener("click", async () => {
     const { sessionId, isOn } = await getState();
 
     if (!isOn) {
-      const goal = goalEl.value.trim();
       try {
-        const r = await fetch("http://localhost:3001/api/sessions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ goal: goal || null })
-        });
-        const s = await r.json();
-        await setState({ sessionId: s.id, isOn: true, goal: goal || null });
+        await createSessionIfNeeded();
       } catch (err) {
         console.error("Failed to create session:", err);
         alert("Could not connect to server. Make sure http://localhost:3001 is running.");
@@ -72,6 +84,26 @@ toggleBtn.addEventListener("click", async () => {
     await refreshUI();
   } catch (err) {
     console.error("Click handler error:", err);
+  }
+});
+
+captureBtn.addEventListener("click", async () => {
+  captureBtn.disabled = true;
+  captureBtn.textContent = "Saving Page...";
+
+  try {
+    await createSessionIfNeeded();
+    const result = await chrome.runtime.sendMessage({ type: "CAPTURE_ACTIVE_TAB" });
+    if (!result?.ok && !result?.skipped) {
+      alert(result?.error || "Could not save this page. Make sure the local server is running.");
+    }
+    await refreshUI();
+  } catch (err) {
+    console.error("Capture handler error:", err);
+    alert("Could not save this page. Make sure http://localhost:3001 is running.");
+  } finally {
+    captureBtn.disabled = false;
+    captureBtn.textContent = "Save Current Page";
   }
 });
 

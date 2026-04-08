@@ -1,6 +1,22 @@
+async function setCaptureStatus({ status, title = "", message = "" }) {
+  await chrome.storage.local.set({
+    lastCaptureAt: Date.now(),
+    lastCaptureTitle: title,
+    lastCaptureStatus: status,
+    lastCaptureMessage: message
+  });
+}
+
 async function sendToMindWeaver(payload) {
   const { sessionId, isOn } = await chrome.storage.local.get(["sessionId", "isOn"]);
-  if (!isOn || !sessionId) return { skipped: true };
+  if (!isOn || !sessionId) {
+    await setCaptureStatus({
+      status: "skipped",
+      title: payload.title || payload.url,
+      message: "Start or create a map before saving evidence."
+    });
+    return { ok: false, skipped: true, reason: "No active map." };
+  }
 
   const endpoint = payload.sourceType && payload.sourceType !== "page" ? "import" : "ingest";
   const response = await fetch(`http://localhost:3001/api/${endpoint}`, {
@@ -10,14 +26,38 @@ async function sendToMindWeaver(payload) {
   });
   const body = await response.json().catch(() => ({}));
 
-  await chrome.storage.local.set({
-    lastCaptureAt: Date.now(),
-    lastCaptureTitle: payload.title || payload.url,
-    lastCaptureStatus: response.ok ? (body.deduped ? "deduped" : "captured") : "skipped",
-    lastCaptureMessage: response.ok ? "" : (body.reason || body.error || "Source was not accepted")
+  await setCaptureStatus({
+    status: response.ok ? (body.deduped ? "deduped" : "captured") : "skipped",
+    title: payload.title || payload.url,
+    message: response.ok ? "" : (body.reason || body.error || "Source was not accepted")
   });
 
-  return { response, body };
+  return { ok: response.ok, status: response.status, body };
+}
+
+async function captureActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) {
+    await setCaptureStatus({ status: "error", message: "No active tab found." });
+    return { ok: false, error: "No active tab found." };
+  }
+
+  const [injection] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: ["content.js"]
+  });
+  const extracted = injection?.result;
+
+  if (!extracted?.ok) {
+    await setCaptureStatus({
+      status: "skipped",
+      title: extracted?.title || tab.title || tab.url,
+      message: extracted?.reason || "MindWeaver could not read this page."
+    });
+    return { ok: false, skipped: true, reason: extracted?.reason || "MindWeaver could not read this page." };
+  }
+
+  return await sendToMindWeaver(extracted.payload);
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -40,24 +80,25 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       content: info.selectionText.trim()
     });
   } catch {
-    await chrome.storage.local.set({
-      lastCaptureAt: Date.now(),
-      lastCaptureStatus: "error",
-      lastCaptureMessage: "Could not save the selected highlight"
+    await setCaptureStatus({
+      status: "error",
+      message: "Could not save the selected highlight."
     });
   }
 });
 
-chrome.runtime.onMessage.addListener(async (msg, sender, sendResponse) => {
-  if (msg?.type !== "PAGE_EXTRACTED") return;
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.type !== "CAPTURE_ACTIVE_TAB") return false;
 
-  try {
-    await sendToMindWeaver(msg.payload);
-  } catch (e) {
-    await chrome.storage.local.set({
-      lastCaptureAt: Date.now(),
-      lastCaptureStatus: "error",
-      lastCaptureMessage: "Could not reach the local MindWeaver server"
+  captureActiveTab()
+    .then((result) => sendResponse(result))
+    .catch(async (error) => {
+      await setCaptureStatus({
+        status: "error",
+        message: "Could not save the current page."
+      });
+      sendResponse({ ok: false, error: error?.message || "Could not save the current page." });
     });
-  }
+
+  return true;
 });

@@ -3,19 +3,12 @@
   "name": "Knowledge Session Logger",
   "version": "0.1.0",
   "permissions": ["storage", "activeTab", "tabs", "scripting", "contextMenus"],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": ["http://localhost:3001/*", "http://localhost:5197/*"],
   "action": {
     "default_title": "Knowledge Logger",
     "default_popup": "popup.html"
   },
   "background": {
     "service_worker": "background.js"
-  },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ]
+  }
 }
