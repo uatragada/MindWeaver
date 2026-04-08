@@ -67,16 +67,317 @@ function downloadTextFile(content, fileName, mimeType) {
   URL.revokeObjectURL(url);
 }
 
+const NODE_PALETTE = {
+  goal: { fill: "#f4f4f4", stroke: "#ffffff", minWidth: 188, minHeight: 62, maxTextWidth: 168, fontSize: 11, lineHeight: 13, maxLines: 3 },
+  domain: { fill: "#d8d8d8", stroke: "#f4f4f4", minWidth: 148, minHeight: 48, maxTextWidth: 128, fontSize: 10.5, lineHeight: 13, maxLines: 2 },
+  skill: { fill: "#bcbcbc", stroke: "#e2e2e2", minWidth: 128, minHeight: 44, maxTextWidth: 108, fontSize: 10, lineHeight: 12, maxLines: 2 },
+  concept: { fill: "#a6a6a6", stroke: "#d8d8d8", minWidth: 122, minHeight: 42, maxTextWidth: 102, fontSize: 10, lineHeight: 12, maxLines: 2 }
+};
+
+const FALLBACK_NODE_STYLE = { fill: "#c9c9c9", stroke: "#f4f4f4", minWidth: 118, minHeight: 42, maxTextWidth: 98, fontSize: 10, lineHeight: 12, maxLines: 2 };
+
+const RIGHT_PANEL_LABELS = {
+  inspector: "Inspector",
+  assistant: "Graph Assistant",
+  actions: "Next Actions",
+  review: "Review Queue",
+  plan: "Study Plan",
+  progress: "Progress",
+  import: "Import Sources",
+  gaps: "Gap Analysis",
+  quiz: "Quiz Loop"
+};
+
+const NODE_TYPE_OPTIONS = [
+  { value: "all", label: "All Types" },
+  { value: "goal", label: "Goals" },
+  { value: "domain", label: "Domains" },
+  { value: "skill", label: "Skills" },
+  { value: "concept", label: "Concepts" }
+];
+
+const SOURCE_TYPE_OPTIONS = [
+  { value: "note", label: "Manual Note" },
+  { value: "pdf", label: "PDF Text" },
+  { value: "youtube", label: "YouTube Transcript" },
+  { value: "doc", label: "Document" },
+  { value: "markdown", label: "Markdown Notes" },
+  { value: "bookmark", label: "Bookmark" },
+  { value: "repo", label: "Repository / Docs" },
+  { value: "highlight", label: "Highlight" }
+];
+
+const MASTERY_OPTIONS = [
+  { value: "new", label: "New" },
+  { value: "seen", label: "Seen" },
+  { value: "understood", label: "Understood" },
+  { value: "verified", label: "Verified" }
+];
+
+const RELATIONSHIP_TYPE_OPTIONS = [
+  { value: "related", label: "Related" },
+  { value: "prerequisite", label: "Prerequisite" },
+  { value: "supports", label: "Supports" },
+  { value: "contrasts", label: "Contrasts" }
+];
+
+function getSelectMenuPlacement(trigger, optionCount) {
+  if (!trigger) return "down";
+
+  const triggerRect = trigger.getBoundingClientRect();
+  let boundaryTop = 0;
+  let boundaryBottom = window.innerHeight;
+  let parent = trigger.parentElement;
+
+  while (parent) {
+    const styles = window.getComputedStyle(parent);
+    const clipping = `${styles.overflow} ${styles.overflowY}`;
+
+    if (/(auto|scroll|hidden|clip)/.test(clipping)) {
+      const parentRect = parent.getBoundingClientRect();
+      boundaryTop = Math.max(boundaryTop, parentRect.top);
+      boundaryBottom = Math.min(boundaryBottom, parentRect.bottom);
+      break;
+    }
+
+    parent = parent.parentElement;
+  }
+
+  const estimatedMenuHeight = Math.min(260, Math.max(56, optionCount * 42 + 12));
+  const spaceBelow = boundaryBottom - triggerRect.bottom;
+  const spaceAbove = triggerRect.top - boundaryTop;
+
+  return spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow ? "up" : "down";
+}
+
+function SelectControl({ value, onChange, options, className = "", ariaLabel = "Select option" }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [menuPlacement, setMenuPlacement] = useState("down");
+  const triggerRef = useRef(null);
+  const selectedOption = options.find((option) => option.value === value) ?? options[0];
+
+  function handleTriggerClick() {
+    if (!isOpen) setMenuPlacement(getSelectMenuPlacement(triggerRef.current, options.length));
+    setIsOpen((current) => !current);
+  }
+
+  return (
+    <div
+      className={`select-control ${isOpen ? "is-open" : ""} ${isOpen && menuPlacement === "up" ? "is-up" : ""} ${className}`}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setIsOpen(false);
+      }}
+    >
+      <button
+        ref={triggerRef}
+        type="button"
+        className="text-input select-trigger"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        onClick={handleTriggerClick}
+      >
+        <span>{selectedOption?.label ?? "Select"}</span>
+      </button>
+      {isOpen ? (
+        <div className="select-menu" role="listbox" tabIndex={-1}>
+          {options.map((option) => (
+            <button
+              key={`${option.value}-${option.label}`}
+              type="button"
+              className={`select-option ${option.value === value ? "is-selected" : ""}`}
+              role="option"
+              aria-selected={option.value === value}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onChange(option.value);
+                setIsOpen(false);
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function drawRoundedRect(ctx, x, y, width, height, radius = 8) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+
+  ctx.beginPath();
+  ctx.moveTo(x + safeRadius, y);
+  ctx.lineTo(x + width - safeRadius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  ctx.lineTo(x + width, y + height - safeRadius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  ctx.lineTo(x + safeRadius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  ctx.lineTo(x, y + safeRadius);
+  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
+  ctx.closePath();
+}
+
+function splitLongWord(ctx, word, maxWidth) {
+  const parts = [];
+  let part = "";
+
+  for (const char of word) {
+    const candidate = `${part}${char}`;
+    if (!part || ctx.measureText(candidate).width <= maxWidth) {
+      part = candidate;
+    } else {
+      parts.push(part);
+      part = char;
+    }
+  }
+
+  if (part) parts.push(part);
+  return parts;
+}
+
+function truncateTextToWidth(ctx, text, maxWidth) {
+  const ellipsis = "...";
+  const value = String(text || "");
+
+  if (ctx.measureText(value).width <= maxWidth) return value;
+
+  let output = value;
+  while (output.length > 1 && ctx.measureText(`${output}${ellipsis}`).width > maxWidth) {
+    output = output.slice(0, -1);
+  }
+
+  return `${output.trimEnd()}${ellipsis}`;
+}
+
+function appendEllipsisToWidth(ctx, text, maxWidth) {
+  const ellipsis = "...";
+  let output = String(text || "");
+
+  while (output.length > 1 && ctx.measureText(`${output}${ellipsis}`).width > maxWidth) {
+    output = output.slice(0, -1);
+  }
+
+  return `${output.trimEnd()}${ellipsis}`;
+}
+
+function wrapNodeLabel(ctx, label, maxWidth) {
+  const words = String(label || "Untitled").trim().split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+
+  for (const word of words.length ? words : ["Untitled"]) {
+    const candidate = line ? `${line} ${word}` : word;
+
+    if (ctx.measureText(candidate).width <= maxWidth) {
+      line = candidate;
+      continue;
+    }
+
+    if (line) lines.push(line);
+
+    if (ctx.measureText(word).width <= maxWidth) {
+      line = word;
+    } else {
+      const parts = splitLongWord(ctx, word, maxWidth);
+      lines.push(...parts.slice(0, -1));
+      line = parts.at(-1) ?? "";
+    }
+  }
+
+  if (line) lines.push(line);
+  return lines.length ? lines : ["Untitled"];
+}
+
+function getNodeMetrics(node, ctx) {
+  const style = NODE_PALETTE[node.type] ?? FALLBACK_NODE_STYLE;
+  const paddingX = 10;
+  const paddingY = 8;
+
+  ctx.font = `700 ${style.fontSize}px Segoe UI`;
+
+  const rawLines = wrapNodeLabel(ctx, node.label, style.maxTextWidth);
+  const lines = rawLines.slice(0, style.maxLines).map((line) => truncateTextToWidth(ctx, line, style.maxTextWidth));
+
+  if (rawLines.length > style.maxLines && lines.length) {
+    lines[lines.length - 1] = appendEllipsisToWidth(ctx, lines[lines.length - 1], style.maxTextWidth);
+  }
+
+  const textWidth = Math.max(...lines.map((line) => ctx.measureText(line).width));
+  const width = Math.ceil(Math.max(style.minWidth, textWidth + paddingX * 2));
+  const height = Math.ceil(Math.max(style.minHeight, lines.length * style.lineHeight + paddingY * 2));
+
+  return {
+    ...style,
+    lines,
+    width,
+    height,
+    x: node.x - width / 2,
+    y: node.y - height / 2,
+    textY: node.y - ((lines.length - 1) * style.lineHeight) / 2
+  };
+}
+
+function getNodeCollisionRadius(node) {
+  const style = NODE_PALETTE[node.type] ?? FALLBACK_NODE_STYLE;
+  return Math.max(style.minWidth, style.minHeight) / 2 + 34;
+}
+
+function createNodeCollisionForce() {
+  let nodes = [];
+  let radii = [];
+
+  function force(alpha) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const left = nodes[i];
+        const right = nodes[j];
+        const minDistance = radii[i] + radii[j];
+        let dx = (right.x ?? 0) - (left.x ?? 0);
+        let dy = (right.y ?? 0) - (left.y ?? 0);
+        let distance = Math.hypot(dx, dy);
+
+        if (distance === 0) {
+          dx = 0.01 * (j - i);
+          dy = 0.01;
+          distance = Math.hypot(dx, dy);
+        }
+
+        if (distance >= minDistance) continue;
+
+        const push = ((minDistance - distance) / distance) * alpha * 0.68;
+        const x = dx * push;
+        const y = dy * push;
+
+        left.vx = (left.vx ?? 0) - x;
+        left.vy = (left.vy ?? 0) - y;
+        right.vx = (right.vx ?? 0) + x;
+        right.vy = (right.vy ?? 0) + y;
+      }
+    }
+  }
+
+  force.initialize = (nextNodes) => {
+    nodes = nextNodes;
+    radii = nodes.map(getNodeCollisionRadius);
+  };
+
+  return force;
+}
+
 export default function App() {
   const sessionId = useQueryParam("sessionId");
   const fgRef = useRef(null);
-  const importPanelRef = useRef(null);
   const graphContainerRef = useRef(null);
 
   const [graphState, setGraphState] = useState(null);
   const [healthState, setHealthState] = useState(null);
   const [recentSessions, setRecentSessions] = useState([]);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [rightPanel, setRightPanel] = useState("inspector");
+  const [leftRailMinimized, setLeftRailMinimized] = useState(false);
+  const [rightRailMinimized, setRightRailMinimized] = useState(true);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [homeErrorMessage, setHomeErrorMessage] = useState("");
@@ -365,10 +666,21 @@ export default function App() {
 
   useEffect(() => {
     if (!fgRef.current) return;
-    fgRef.current.d3Force("charge").strength(-260);
-    fgRef.current.d3Force("link").distance(150);
+    fgRef.current.d3Force("nodeCollision", createNodeCollisionForce());
+    fgRef.current.d3Force("charge").strength(-220);
+    fgRef.current.d3Force("link").distance(130);
     fgRef.current.d3ReheatSimulation();
   }, [graphData]);
+
+  useEffect(() => {
+    if (!fgRef.current || !graphData.nodes.length) return;
+
+    const zoomTimer = window.setTimeout(() => {
+      fgRef.current?.zoomToFit(350, 70);
+    }, 180);
+
+    return () => window.clearTimeout(zoomTimer);
+  }, [graphData.nodes.length, graphSize.width, graphSize.height, leftRailMinimized, rightRailMinimized]);
 
   const selectedNodeConnections = useMemo(() => {
     if (!selectedNode) return { upstream: [], downstream: [] };
@@ -802,6 +1114,7 @@ export default function App() {
       });
       setStatusMessage("Nodes merged.");
       setSelectedNodeId(mergeTargetId);
+      openRightPanel("inspector");
       await loadGraph();
     } catch (error) {
       setErrorMessage(error.message);
@@ -850,60 +1163,61 @@ export default function App() {
     }
   };
 
+  const openRightPanel = (panel) => {
+    setRightPanel(panel);
+    setRightRailMinimized(false);
+  };
+
+  const handleFocusGraph = () => {
+    setLeftRailMinimized(true);
+    setRightRailMinimized(true);
+  };
+
   const handleRecommendation = (recommendation) => {
     if (recommendation.nodeId) {
       setSelectedNodeId(recommendation.nodeId);
+      openRightPanel("inspector");
       return;
     }
 
-    if (recommendation.kind === "capture") {
-      importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    openRightPanel("import");
   };
 
   const handleNodeRender = (node, ctx) => {
-    const palette = {
-      goal: { fill: "#fff2de", stroke: "#ff8b54", radius: 24 },
-      domain: { fill: "#dff6ff", stroke: "#60cce8", radius: 19 },
-      skill: { fill: "#dff9f0", stroke: "#64d8b2", radius: 15 },
-      concept: { fill: "#fff6d4", stroke: "#f6ca68", radius: 11 }
-    };
-
-    const style = palette[node.type] ?? { fill: "#eef3fa", stroke: "#adc0da", radius: 12 };
     const isSelected = node.id === selectedNodeId;
+    const metrics = getNodeMetrics(node, ctx);
 
     ctx.save();
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, style.radius, 0, Math.PI * 2);
-    ctx.fillStyle = style.fill;
-    ctx.shadowColor = isSelected ? "rgba(255,139,84,0.5)" : "transparent";
-    ctx.shadowBlur = isSelected ? 18 : 0;
+    drawRoundedRect(ctx, metrics.x, metrics.y, metrics.width, metrics.height, 8);
+    ctx.fillStyle = metrics.fill;
+    ctx.shadowColor = isSelected ? "rgba(255,255,255,0.34)" : "transparent";
+    ctx.shadowBlur = isSelected ? 14 : 0;
     ctx.fill();
-    ctx.lineWidth = isSelected ? 3 : 2;
-    ctx.strokeStyle = isSelected ? "#ff8b54" : style.stroke;
+    ctx.lineWidth = isSelected ? 2.6 : 1.5;
+    ctx.strokeStyle = isSelected ? "#050505" : metrics.stroke;
     ctx.stroke();
     ctx.shadowBlur = 0;
 
-    ctx.fillStyle = "#0b1525";
+    ctx.fillStyle = "#050505";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.font = `600 ${Math.max(10, style.radius * 0.7)}px Segoe UI`;
-    const label = node.label.length > 18 ? `${node.label.slice(0, 16)}...` : node.label;
-    ctx.fillText(label, node.x, node.y);
+    ctx.font = `700 ${metrics.fontSize}px Segoe UI`;
+    metrics.lines.forEach((line, index) => {
+      ctx.fillText(line, node.x, metrics.textY + index * metrics.lineHeight);
+    });
     ctx.restore();
   };
 
   const handlePointerPaint = (node, color, ctx) => {
-    const radius = node.type === "goal" ? 30 : node.type === "domain" ? 24 : node.type === "skill" ? 20 : 16;
+    const metrics = getNodeMetrics(node, ctx);
     ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+    drawRoundedRect(ctx, metrics.x - 4, metrics.y - 4, metrics.width + 8, metrics.height + 8, 10);
     ctx.fill();
   };
 
   const handleLinkRender = (link, ctx) => {
     ctx.save();
-    ctx.strokeStyle = link.type === "needs" ? "rgba(255,122,122,0.72)" : "rgba(124,225,255,0.32)";
+    ctx.strokeStyle = link.type === "needs" ? "rgba(255,255,255,0.48)" : "rgba(255,255,255,0.22)";
     ctx.lineWidth = link.type === "needs" ? 1.7 : 1.1;
     if (link.type === "needs") ctx.setLineDash([5, 5]);
     ctx.beginPath();
@@ -990,10 +1304,71 @@ export default function App() {
     );
   }
 
+  const rightPanelLabel = RIGHT_PANEL_LABELS[rightPanel] ?? "Inspector";
+  const appShellClassName = [
+    "app-shell",
+    leftRailMinimized ? "is-left-minimized" : "",
+    rightRailMinimized ? "is-right-minimized" : ""
+  ].filter(Boolean).join(" ");
+
   return (
     <div className="page-shell">
-      <div className="app-shell">
-        <aside className="left-rail">
+      <div className={appShellClassName}>
+        <aside className={`left-rail ${leftRailMinimized ? "is-minimized" : ""}`} aria-label="Map navigation">
+          {leftRailMinimized ? (
+            <button className="rail-tab rail-tab-left" type="button" onClick={() => setLeftRailMinimized(false)} aria-label="Expand workspaces">
+              <span className="rail-tab-label">Workspaces</span>
+              <span className="rail-tab-mark" aria-hidden="true" />
+            </button>
+          ) : (
+            <>
+          <section className="panel workspace-nav">
+            <div className="panel-heading-row">
+              <p className="panel-title">Workspaces</p>
+              <button className="rail-toggle-button" type="button" onClick={() => setLeftRailMinimized(true)} aria-label="Collapse workspaces">
+                Collapse
+              </button>
+            </div>
+            <div className="workspace-list">
+              <button className={`workspace-button ${rightPanel === "inspector" ? "is-active" : ""}`} onClick={() => openRightPanel("inspector")}>
+                <strong>Inspector</strong>
+                <span>{selectedNode ? selectedNode.label : "Select and clean up a node"}</span>
+              </button>
+              <button className={`workspace-button ${rightPanel === "assistant" ? "is-active" : ""}`} onClick={() => openRightPanel("assistant")}>
+                <strong>Graph Assistant</strong>
+                <span>Ask questions against this map</span>
+              </button>
+              <button className={`workspace-button ${rightPanel === "actions" ? "is-active" : ""}`} onClick={() => openRightPanel("actions")}>
+                <strong>Next Actions</strong>
+                <span>{graphState?.recommendations?.length ?? 0} recommendations</span>
+              </button>
+              <button className={`workspace-button ${rightPanel === "review" ? "is-active" : ""}`} onClick={() => openRightPanel("review")}>
+                <strong>Review Queue</strong>
+                <span>{graphState?.reviewQueue?.length ?? 0} concepts waiting</span>
+              </button>
+              <button className={`workspace-button ${rightPanel === "plan" ? "is-active" : ""}`} onClick={() => openRightPanel("plan")}>
+                <strong>{graphState?.studyPlan?.title ?? "Study Plan"}</strong>
+                <span>{graphState?.studyPlan?.totalMinutes ?? 15} minute next session</span>
+              </button>
+              <button className={`workspace-button ${rightPanel === "progress" ? "is-active" : ""}`} onClick={() => openRightPanel("progress")}>
+                <strong>Progress Report</strong>
+                <span>{progressState?.longTerm?.sessionCount ?? 0} sessions tracked</span>
+              </button>
+              <button className={`workspace-button ${rightPanel === "import" ? "is-active" : ""}`} onClick={() => openRightPanel("import")}>
+                <strong>Import Sources</strong>
+                <span>Notes, transcripts, docs, and highlights</span>
+              </button>
+              <button className={`workspace-button ${rightPanel === "gaps" ? "is-active" : ""}`} onClick={() => openRightPanel("gaps")}>
+                <strong>Gap Analysis</strong>
+                <span>{gapSummary?.gaps?.length ? `${gapSummary.gaps.length} gaps found` : "Find missing concepts"}</span>
+              </button>
+              <button className={`workspace-button ${rightPanel === "quiz" ? "is-active" : ""}`} onClick={() => openRightPanel("quiz")}>
+                <strong>Quiz Loop</strong>
+                <span>{quizState.quiz?.length ? `${quizState.quiz.length} questions ready` : "Generate spaced review"}</span>
+              </button>
+            </div>
+          </section>
+
           <section className="panel hero-card">
             <p className="panel-title">Session Overview</p>
             <h1>{graphState?.session?.goal || "Open learning session"}</h1>
@@ -1015,10 +1390,10 @@ export default function App() {
               </div>
             </div>
             <div className="action-row">
-              <button className="primary-button" onClick={handleRunGapAnalysis} disabled={isLoadingGaps || !graphState?.goals?.length}>
+              <button className="primary-button" onClick={() => { openRightPanel("gaps"); handleRunGapAnalysis(); }} disabled={isLoadingGaps || !graphState?.goals?.length}>
                 {isLoadingGaps ? "Finding gaps..." : "Run Gap Analysis"}
               </button>
-              <button className="secondary-button" onClick={handleGenerateQuiz} disabled={isLoadingQuiz}>
+              <button className="secondary-button" onClick={() => { openRightPanel("quiz"); handleGenerateQuiz(); }} disabled={isLoadingQuiz}>
                 {isLoadingQuiz ? "Building quiz..." : "Generate Quiz"}
               </button>
               <button className="ghost-button" onClick={handleEndSession} disabled={isEndingSession || graphState?.session?.endedAt}>
@@ -1078,270 +1453,15 @@ export default function App() {
             </div>
           </section>
 
-          <section className="panel scroll-panel">
-            <p className="panel-title">{graphState?.studyPlan?.title ?? "Study Plan"}</p>
-            <p className="panel-subtitle">
-              A realistic next session, sized to about {graphState?.studyPlan?.totalMinutes ?? 15} minutes.
-            </p>
-            <div className="study-steps">
-              {(graphState?.studyPlan?.steps ?? []).map((step, index) => (
-                <div key={`${step.title}-${index}`} className="study-step">
-                  <span>{step.minutes}m</span>
-                  <div>
-                    <strong>{step.title}</strong>
-                    <p>{step.detail}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="panel scroll-panel">
-            <p className="panel-title">Progress Report</p>
-            <p className="panel-subtitle">
-              Session and long-term learning health, based on concepts, evidence, and verification.
-            </p>
-            <div className="progress-grid">
-              <div><strong>{progressState?.byMastery?.verified ?? 0}</strong><span>Verified</span></div>
-              <div><strong>{progressState?.byMastery?.understood ?? 0}</strong><span>Understood</span></div>
-              <div><strong>{progressState?.byMastery?.seen ?? 0}</strong><span>Seen</span></div>
-              <div><strong>{progressState?.longTerm?.sessionCount ?? 0}</strong><span>Sessions</span></div>
-            </div>
-            <div className="queue-actions">
-              <button className="small-button" onClick={handleLoadSummary} disabled={isLoadingSummary}>
-                {isLoadingSummary ? "Summarizing..." : "Generate Summary"}
-              </button>
-              <button className="small-button is-reject" onClick={handlePrune} disabled={isPruning}>
-                {isPruning ? "Checking..." : "Prune Weak Nodes"}
-              </button>
-            </div>
-            {learningSummary ? (
-              <div className="summary-card">
-                <h3>{learningSummary.title}</h3>
-                <div className="queue-meta">{learningSummary.summary}</div>
-                {learningSummary.topConcepts?.length ? <div className="queue-meta">Top concepts: {learningSummary.topConcepts.join(", ")}</div> : null}
-              </div>
-            ) : null}
-          </section>
-
-          <section className="panel scroll-panel">
-            <p className="panel-title">Graph Assistant</p>
-            <p className="panel-subtitle">
-              Ask questions against this map. Answers are grounded in matching concepts and sources.
-            </p>
-            <div className="import-form">
-              <textarea
-                className="text-area compact-area"
-                placeholder="Example: What should I study next and why?"
-                value={chatQuestion}
-                onChange={(event) => setChatQuestion(event.target.value)}
-              />
-              <button className="primary-button" onClick={handleChat} disabled={isChatting || !chatQuestion.trim()}>
-                {isChatting ? "Thinking..." : "Ask The Graph"}
-              </button>
-            </div>
-            {chatAnswer ? (
-              <div className="summary-card">
-                <h3>Answer</h3>
-                <div className="learn-more-copy">{chatAnswer.answer}</div>
-                {chatAnswer.citations?.length ? (
-                  <div className="review-list compact-list">
-                    {chatAnswer.citations.map((citation) => (
-                      <div key={citation.id} className="mini-note">{citation.label}</div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </section>
-
-          <section className="panel scroll-panel">
-            <p className="panel-title">Next Actions</p>
-            <p className="panel-subtitle">
-              Recommendations are built from review due dates, low-evidence concepts, and your latest gap analysis.
-            </p>
-            <div className="review-list">
-              {graphState?.recommendations?.length ? graphState.recommendations.map((recommendation) => (
-                <div key={`${recommendation.kind}-${recommendation.title}`} className="queue-item">
-                  <h3>{recommendation.title}</h3>
-                  <div className="queue-meta">{recommendation.reason}</div>
-                  <div className="queue-actions">
-                    <button className="small-button" onClick={() => handleRecommendation(recommendation)}>
-                      {recommendation.nodeId ? "Open Node" : "Open Import"}
-                    </button>
-                  </div>
-                </div>
-              )) : <div className="queue-item"><h3>No recommendations yet</h3><div className="queue-meta">Capture more sources or run gap analysis to generate next-step suggestions.</div></div>}
-            </div>
-          </section>
-
-          <section className="panel scroll-panel">
-            <p className="panel-title">Review Queue</p>
-            <p className="panel-subtitle">
-              These concepts are low-confidence or due for spaced review. Approve them when they look right, or reject them to clean the session graph.
-            </p>
-            <div className="review-list">
-              {graphState?.reviewQueue?.length ? graphState.reviewQueue.map((node) => (
-                <div key={node.id} className="queue-item">
-                  <h3>{node.label}</h3>
-                  <div className="queue-meta">
-                    Confidence {Math.round((node.confidence ?? 0) * 100)}% • Evidence {node.evidenceCount} • {describeReviewDate(node.nextReviewAt)}
-                  </div>
-                  <div className="queue-actions">
-                    <button className="small-button" onClick={() => setSelectedNodeId(node.id)}>Inspect</button>
-                    <button className="small-button is-approve" disabled={isReviewing} onClick={() => handleReview(node.id, "approve")}>Approve</button>
-                    <button className="small-button is-reject" disabled={isReviewing} onClick={() => handleReview(node.id, "reject")}>Reject</button>
-                  </div>
-                </div>
-              )) : <div className="queue-item"><h3>Queue cleared</h3><div className="queue-meta">Nothing is waiting for review right now.</div></div>}
-            </div>
-          </section>
-
-          <section className="panel scroll-panel" ref={importPanelRef}>
-            <p className="panel-title">Import Sources</p>
-            <p className="panel-subtitle">
-              Add manual notes, PDF text, or YouTube transcripts so the graph is not limited to passive browser capture.
-            </p>
-            <form className="import-form" onSubmit={handleImportSubmit}>
-              <select className="text-input" value={importForm.sourceType} onChange={(event) => handleImportChange("sourceType", event.target.value)}>
-                <option value="note">Manual Note</option>
-                <option value="pdf">PDF Text</option>
-                <option value="youtube">YouTube Transcript</option>
-                <option value="doc">Document</option>
-                <option value="markdown">Markdown Notes</option>
-                <option value="bookmark">Bookmark</option>
-                <option value="repo">Repository / Docs</option>
-                <option value="highlight">Highlight</option>
-              </select>
-              <input className="text-input" placeholder="Title" value={importForm.title} onChange={(event) => handleImportChange("title", event.target.value)} />
-              <input className="text-input" placeholder="Optional source URL" value={importForm.url} onChange={(event) => handleImportChange("url", event.target.value)} />
-              <textarea
-                className="text-area"
-                placeholder="Paste the note, transcript, or extracted PDF text here..."
-                value={importForm.content}
-                onChange={(event) => handleImportChange("content", event.target.value)}
-              />
-              <input className="text-input" type="file" accept=".txt,.md,.text" onChange={handleImportFile} />
-              <div className={`char-meter ${importIsTooLong ? "is-danger" : ""}`}>
-                {importContentLength.toLocaleString()} / {maxImportChars.toLocaleString()} characters. OpenAI classification reads up to {healthState?.contentLimitChars?.toLocaleString() ?? "16,000"} characters.
-              </div>
-              {importIsTooLong ? <div className="message-banner error-banner">This import is too large. Trim it or split it into multiple sources before importing.</div> : null}
-              <button className="primary-button" type="submit" disabled={isImporting || importIsTooLong}>
-                {isImporting ? "Importing..." : "Import Into Session"}
-              </button>
-            </form>
-            <div className="summary-card">
-              <h3>Bulk Markdown / Reading List Import</h3>
-              <div className="queue-meta">Paste multiple notes or saved-reading extracts. Separate each item with a line containing ---.</div>
-              <div className="import-form">
-                <textarea
-                  className="text-area"
-                  placeholder={"Note one...\n---\nNote two..."}
-                  value={bulkImportText}
-                  onChange={(event) => setBulkImportText(event.target.value)}
-                />
-                <button className="secondary-button" type="button" disabled={isBulkImporting || !bulkImportText.trim()} onClick={handleBulkImport}>
-                  {isBulkImporting ? "Bulk importing..." : "Bulk Import"}
-                </button>
-              </div>
-            </div>
-            <div className="review-list">
-              {(graphState?.artifacts ?? []).slice(-4).reverse().map((artifact) => (
-                <div key={artifact.id} className="queue-item">
-                  <h3>{artifact.title}</h3>
-                  <div className="queue-meta">{artifact.sourceType || "page"} • {artifact.contentLength} chars</div>
-                  <div className="queue-actions">
-                    <button className="small-button is-reject" type="button" disabled={isDeletingArtifact} onClick={() => handleDeleteArtifact(artifact.id)}>
-                      Remove Source
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="panel scroll-panel">
-            <p className="panel-title">Gap Analysis</p>
-            <p className="panel-subtitle">
-              Use the current graph plus your session goal to spot missing concepts and choose the next learning move.
-            </p>
-            {gapSummary ? (
-              <div className="summary-card">
-                <h3>{gapSummary.gaps?.length ? `${gapSummary.gaps.length} gap${gapSummary.gaps.length === 1 ? "" : "s"} found` : "No explicit gaps yet"}</h3>
-                <div className="quiz-meta">Difficulty: {gapSummary.difficulty || "unknown"}</div>
-                {gapSummary.gaps?.length ? (
-                  <div className="queue-meta">Missing concepts: {gapSummary.gaps.join(", ")}</div>
-                ) : (
-                  <div className="queue-meta">The current session already covers the obvious next concepts. Keep verifying what you know.</div>
-                )}
-                {gapSummary.pathway?.length ? (
-                  <ol className="pathway-list">
-                    {gapSummary.pathway.map((step) => <li key={step}>{step}</li>)}
-                  </ol>
-                ) : null}
-              </div>
-            ) : (
-              <div className="queue-item">
-                <h3>No gap report yet</h3>
-                <div className="queue-meta">Run analysis after a few ingested pages to get a more useful pathway.</div>
-              </div>
-            )}
-          </section>
-
-          <section className="panel scroll-panel">
-            <p className="panel-title">Quiz Loop</p>
-            <p className="panel-subtitle">
-              Generate a short spaced-review quiz, answer it here, and feed the results back into the graph confidence model.
-            </p>
-            {quizState.message ? <div className="summary-card"><h3>Quiz status</h3><div className="queue-meta">{quizState.message}</div></div> : null}
-            {quizState.quiz?.length ? (
-              <>
-                <div className="quiz-list">
-                  {quizState.quiz.map((question, index) => (
-                    <div key={question.id} className="quiz-card">
-                      <h3>{index + 1}. {question.q}</h3>
-                      <div className="quiz-meta">Concept: {question.concept}</div>
-                      {question.options.map((option, optionIndex) => (
-                        <label key={`${question.id}-${optionIndex}`} className="quiz-option">
-                          <input
-                            type="radio"
-                            name={question.id}
-                            checked={quizAnswers[question.id] === optionIndex}
-                            onChange={() => setQuizAnswers((current) => ({ ...current, [question.id]: optionIndex }))}
-                          />
-                          <span>{option}</span>
-                        </label>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-                <div className="quiz-actions">
-                  <button className="primary-button" onClick={handleSubmitQuiz}>Check Quiz And Update Confidence</button>
-                  <button className="ghost-button" onClick={handleGenerateQuiz} disabled={isLoadingQuiz}>Refresh Quiz</button>
-                </div>
-                {quizResult ? (
-                  <div className="summary-card">
-                    <h3>Quiz complete</h3>
-                    <div className="queue-meta">
-                      {quizResult.correctCount} of {quizResult.answeredCount} answered concepts were correct.
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <div className="queue-item">
-                <h3>No quiz loaded</h3>
-                <div className="queue-meta">Generate a quiz to turn this graph into a feedback loop instead of a static picture.</div>
-              </div>
-            )}
-          </section>
+            </>
+          )}
         </aside>
 
         <main className="graph-card">
           <div className="graph-toolbar">
             <div>
               <h2>Knowledge Graph</h2>
-              <p>{isLoadingGraph ? "Refreshing graph..." : `${graphData.nodes.length} visible nodes. Search, filter, then click a node to inspect it.`}</p>
+              <p>{isLoadingGraph ? "Refreshing graph..." : `${graphData.nodes.length} visible nodes`}</p>
             </div>
             <div className="graph-controls">
               <input
@@ -1350,15 +1470,18 @@ export default function App() {
                 value={nodeSearch}
                 onChange={(event) => setNodeSearch(event.target.value)}
               />
-              <select className="text-input graph-filter" value={nodeTypeFilter} onChange={(event) => setNodeTypeFilter(event.target.value)}>
-                <option value="all">All Types</option>
-                <option value="goal">Goals</option>
-                <option value="domain">Domains</option>
-                <option value="skill">Skills</option>
-                <option value="concept">Concepts</option>
-              </select>
+              <SelectControl
+                className="graph-filter"
+                value={nodeTypeFilter}
+                onChange={setNodeTypeFilter}
+                options={NODE_TYPE_OPTIONS}
+                ariaLabel="Filter node type"
+              />
               <button className="small-button" onClick={handleGraphSearch} disabled={isSearchingGraph || !nodeSearch.trim()}>
-                {isSearchingGraph ? "Searching..." : "Search Evidence"}
+                {isSearchingGraph ? "Searching..." : "Find Evidence"}
+              </button>
+              <button className="small-button" type="button" onClick={handleFocusGraph}>
+                Focus Graph
               </button>
             </div>
             <div className="status-pill">
@@ -1373,7 +1496,11 @@ export default function App() {
                 <button
                   key={`${result.kind}-${result.id}`}
                   className="search-chip"
-                  onClick={() => result.kind === "node" ? setSelectedNodeId(result.id) : null}
+                  onClick={() => {
+                    if (result.kind !== "node") return;
+                    setSelectedNodeId(result.id);
+                    openRightPanel("inspector");
+                  }}
                 >
                   <strong>{result.label}</strong>
                   <span>{result.kind} • {result.type}</span>
@@ -1387,7 +1514,7 @@ export default function App() {
                 <p className="panel-title">Start Building</p>
                 <h3>No visible map nodes yet</h3>
                 <p>Set a goal, import a note, or browse with the extension. Once sources are classified, your knowledge map will appear here.</p>
-                <button className="primary-button" onClick={() => importPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+                <button className="primary-button" onClick={() => openRightPanel("import")}>
                   Import First Source
                 </button>
               </div>
@@ -1403,17 +1530,328 @@ export default function App() {
               linkCanvasObject={handleLinkRender}
               linkWidth={() => 1}
               linkColor={() => "rgba(255,255,255,0.18)"}
-              onNodeClick={(node) => setSelectedNodeId(node.id)}
+              onNodeClick={(node) => {
+                setSelectedNodeId(node.id);
+                openRightPanel("inspector");
+              }}
               nodeRelSize={4}
               warmupTicks={120}
               cooldownTicks={90}
               d3VelocityDecay={0.28}
+              onEngineStop={() => fgRef.current?.zoomToFit(450, 60)}
             />
           </div>
         </main>
 
-        <aside className="right-rail">
-          <section className="panel scroll-panel">
+        <aside className={`right-rail ${rightRailMinimized ? "is-minimized" : ""}`} aria-label="Workspace details">
+          {rightRailMinimized ? (
+            <button className="rail-tab rail-tab-right" type="button" onClick={() => setRightRailMinimized(false)} aria-label={`Expand ${rightPanelLabel}`}>
+              <span className="rail-tab-label">{rightPanelLabel}</span>
+              <span className="rail-tab-mark" aria-hidden="true" />
+            </button>
+          ) : (
+            <section className="panel scroll-panel workspace-panel">
+              <div className="workspace-panel-chrome">
+                <span>{rightPanelLabel}</span>
+                <button className="rail-toggle-button" type="button" onClick={() => setRightRailMinimized(true)} aria-label="Collapse right panel">
+                  Collapse
+                </button>
+              </div>
+            {rightPanel === "plan" ? (
+              <>
+                <div className="workspace-panel-header">
+                  <p className="panel-title">{graphState?.studyPlan?.title ?? "Study Plan"}</p>
+                  <h2>Next session plan</h2>
+                  <p className="panel-subtitle">
+                    A realistic next session, sized to about {graphState?.studyPlan?.totalMinutes ?? 15} minutes.
+                  </p>
+                </div>
+                <div className="study-steps workspace-list-large">
+                  {graphState?.studyPlan?.steps?.length ? graphState.studyPlan.steps.map((step, index) => (
+                    <div key={`${step.title}-${index}`} className="study-step">
+                      <span>{step.minutes}m</span>
+                      <div>
+                        <strong>{step.title}</strong>
+                        <p>{step.detail}</p>
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="queue-item">
+                      <h3>No plan yet</h3>
+                      <div className="queue-meta">Add or review more source-backed concepts to generate a useful next session.</div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : null}
+
+            {rightPanel === "progress" ? (
+              <>
+                <div className="workspace-panel-header">
+                  <p className="panel-title">Progress Report</p>
+                  <h2>Learning health</h2>
+                  <p className="panel-subtitle">
+                    Session and long-term learning health, based on concepts, evidence, and verification.
+                  </p>
+                </div>
+                <div className="progress-grid workspace-progress-grid">
+                  <div><strong>{progressState?.byMastery?.verified ?? 0}</strong><span>Verified</span></div>
+                  <div><strong>{progressState?.byMastery?.understood ?? 0}</strong><span>Understood</span></div>
+                  <div><strong>{progressState?.byMastery?.seen ?? 0}</strong><span>Seen</span></div>
+                  <div><strong>{progressState?.longTerm?.sessionCount ?? 0}</strong><span>Sessions</span></div>
+                </div>
+                <div className="queue-actions">
+                  <button className="small-button" onClick={handleLoadSummary} disabled={isLoadingSummary}>
+                    {isLoadingSummary ? "Summarizing..." : "Generate Summary"}
+                  </button>
+                  <button className="small-button is-reject" onClick={handlePrune} disabled={isPruning}>
+                    {isPruning ? "Checking..." : "Prune Weak Nodes"}
+                  </button>
+                </div>
+                {learningSummary ? (
+                  <div className="summary-card">
+                    <h3>{learningSummary.title}</h3>
+                    <div className="queue-meta">{learningSummary.summary}</div>
+                    {learningSummary.topConcepts?.length ? <div className="queue-meta">Top concepts: {learningSummary.topConcepts.join(", ")}</div> : null}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+
+            {rightPanel === "assistant" ? (
+              <>
+                <div className="workspace-panel-header">
+                  <p className="panel-title">Graph Assistant</p>
+                  <h2>Ask the graph</h2>
+                  <p className="panel-subtitle">Answers use matching concepts and sources from this map.</p>
+                </div>
+                <div className="import-form workspace-form">
+                  <textarea
+                    className="text-area workspace-area"
+                    placeholder="Example: What should I study next and why?"
+                    value={chatQuestion}
+                    onChange={(event) => setChatQuestion(event.target.value)}
+                  />
+                  <button className="primary-button" onClick={handleChat} disabled={isChatting || !chatQuestion.trim()}>
+                    {isChatting ? "Thinking..." : "Ask The Graph"}
+                  </button>
+                </div>
+                {chatAnswer ? (
+                  <div className="summary-card">
+                    <h3>Answer</h3>
+                    <div className="learn-more-copy">{chatAnswer.answer}</div>
+                    {chatAnswer.citations?.length ? (
+                      <div className="review-list compact-list">
+                        {chatAnswer.citations.map((citation) => (
+                          <div key={citation.id} className="mini-note">{citation.label}</div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+
+            {rightPanel === "actions" ? (
+              <>
+                <div className="workspace-panel-header">
+                  <p className="panel-title">Next Actions</p>
+                  <h2>Recommended moves</h2>
+                  <p className="panel-subtitle">Built from review dates, low-evidence concepts, and the latest gap analysis.</p>
+                </div>
+                <div className="review-list workspace-list-large">
+                  {graphState?.recommendations?.length ? graphState.recommendations.map((recommendation) => (
+                    <div key={`${recommendation.kind}-${recommendation.title}`} className="queue-item">
+                      <h3>{recommendation.title}</h3>
+                      <div className="queue-meta">{recommendation.reason}</div>
+                      <div className="queue-actions">
+                        <button className="small-button" onClick={() => handleRecommendation(recommendation)}>
+                          {recommendation.nodeId ? "Open Node" : "Open Import"}
+                        </button>
+                      </div>
+                    </div>
+                  )) : <div className="queue-item"><h3>No recommendations yet</h3><div className="queue-meta">Capture more sources or run gap analysis to generate next-step suggestions.</div></div>}
+                </div>
+              </>
+            ) : null}
+
+            {rightPanel === "review" ? (
+              <>
+                <div className="workspace-panel-header">
+                  <p className="panel-title">Review Queue</p>
+                  <h2>Concepts to check</h2>
+                  <p className="panel-subtitle">Approve concepts that look right, or reject noisy ones to clean the map.</p>
+                </div>
+                <div className="review-list workspace-list-large">
+                  {graphState?.reviewQueue?.length ? graphState.reviewQueue.map((node) => (
+                    <div key={node.id} className="queue-item">
+                      <h3>{node.label}</h3>
+                      <div className="queue-meta">
+                        Confidence {Math.round((node.confidence ?? 0) * 100)}% • Evidence {node.evidenceCount} • {describeReviewDate(node.nextReviewAt)}
+                      </div>
+                      <div className="queue-actions">
+                        <button className="small-button" onClick={() => { setSelectedNodeId(node.id); openRightPanel("inspector"); }}>Inspect</button>
+                        <button className="small-button is-approve" disabled={isReviewing} onClick={() => handleReview(node.id, "approve")}>Approve</button>
+                        <button className="small-button is-reject" disabled={isReviewing} onClick={() => handleReview(node.id, "reject")}>Reject</button>
+                      </div>
+                    </div>
+                  )) : <div className="queue-item"><h3>Queue cleared</h3><div className="queue-meta">Nothing is waiting for review right now.</div></div>}
+                </div>
+              </>
+            ) : null}
+
+            {rightPanel === "import" ? (
+              <>
+                <div className="workspace-panel-header">
+                  <p className="panel-title">Import Sources</p>
+                  <h2>Add source material</h2>
+                  <p className="panel-subtitle">Add notes, PDF text, YouTube transcripts, docs, bookmarks, or highlights.</p>
+                </div>
+                <form className="import-form workspace-form" onSubmit={handleImportSubmit}>
+                  <SelectControl
+                    value={importForm.sourceType}
+                    onChange={(value) => handleImportChange("sourceType", value)}
+                    options={SOURCE_TYPE_OPTIONS}
+                    ariaLabel="Source type"
+                  />
+                  <input className="text-input" placeholder="Title" value={importForm.title} onChange={(event) => handleImportChange("title", event.target.value)} />
+                  <input className="text-input" placeholder="Optional source URL" value={importForm.url} onChange={(event) => handleImportChange("url", event.target.value)} />
+                  <textarea
+                    className="text-area workspace-area import-content-area"
+                    placeholder="Paste the note, transcript, or extracted PDF text here..."
+                    value={importForm.content}
+                    onChange={(event) => handleImportChange("content", event.target.value)}
+                  />
+                  <input className="text-input" type="file" accept=".txt,.md,.text" onChange={handleImportFile} />
+                  <div className={`char-meter ${importIsTooLong ? "is-danger" : ""}`}>
+                    {importContentLength.toLocaleString()} / {maxImportChars.toLocaleString()} characters. OpenAI classification reads up to {healthState?.contentLimitChars?.toLocaleString() ?? "16,000"} characters.
+                  </div>
+                  {importIsTooLong ? <div className="message-banner error-banner">This import is too large. Trim it or split it into multiple sources before importing.</div> : null}
+                  <button className="primary-button" type="submit" disabled={isImporting || importIsTooLong}>
+                    {isImporting ? "Importing..." : "Import Into Session"}
+                  </button>
+                </form>
+                <div className="summary-card">
+                  <h3>Bulk Markdown / Reading List Import</h3>
+                  <div className="queue-meta">Paste multiple notes or saved-reading extracts. Separate each item with a line containing ---.</div>
+                  <div className="import-form">
+                    <textarea
+                      className="text-area workspace-area"
+                      placeholder={"Note one...\n---\nNote two..."}
+                      value={bulkImportText}
+                      onChange={(event) => setBulkImportText(event.target.value)}
+                    />
+                    <button className="secondary-button" type="button" disabled={isBulkImporting || !bulkImportText.trim()} onClick={handleBulkImport}>
+                      {isBulkImporting ? "Bulk importing..." : "Bulk Import"}
+                    </button>
+                  </div>
+                </div>
+                <div className="review-list workspace-list-large">
+                  {(graphState?.artifacts ?? []).slice(-4).reverse().map((artifact) => (
+                    <div key={artifact.id} className="queue-item">
+                      <h3>{artifact.title}</h3>
+                      <div className="queue-meta">{artifact.sourceType || "page"} • {artifact.contentLength} chars</div>
+                      <div className="queue-actions">
+                        <button className="small-button is-reject" type="button" disabled={isDeletingArtifact} onClick={() => handleDeleteArtifact(artifact.id)}>
+                          Remove Source
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
+
+            {rightPanel === "gaps" ? (
+              <>
+                <div className="workspace-panel-header">
+                  <p className="panel-title">Gap Analysis</p>
+                  <h2>Missing concepts</h2>
+                  <p className="panel-subtitle">Use the current graph and session goal to choose the next learning move.</p>
+                </div>
+                <button className="primary-button workspace-primary-action" onClick={handleRunGapAnalysis} disabled={isLoadingGaps || !graphState?.goals?.length}>
+                  {isLoadingGaps ? "Finding gaps..." : "Run Gap Analysis"}
+                </button>
+                {gapSummary ? (
+                  <div className="summary-card">
+                    <h3>{gapSummary.gaps?.length ? `${gapSummary.gaps.length} gap${gapSummary.gaps.length === 1 ? "" : "s"} found` : "No explicit gaps yet"}</h3>
+                    <div className="quiz-meta">Difficulty: {gapSummary.difficulty || "unknown"}</div>
+                    {gapSummary.gaps?.length ? (
+                      <div className="queue-meta">Missing concepts: {gapSummary.gaps.join(", ")}</div>
+                    ) : (
+                      <div className="queue-meta">The current session already covers the obvious next concepts. Keep verifying what you know.</div>
+                    )}
+                    {gapSummary.pathway?.length ? (
+                      <ol className="pathway-list">
+                        {gapSummary.pathway.map((step) => <li key={step}>{step}</li>)}
+                      </ol>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="queue-item">
+                    <h3>No gap report yet</h3>
+                    <div className="queue-meta">Run analysis after a few ingested pages to get a more useful pathway.</div>
+                  </div>
+                )}
+              </>
+            ) : null}
+
+            {rightPanel === "quiz" ? (
+              <>
+                <div className="workspace-panel-header">
+                  <p className="panel-title">Quiz Loop</p>
+                  <h2>Spaced review</h2>
+                  <p className="panel-subtitle">Generate a short quiz and feed results back into confidence.</p>
+                </div>
+                <button className="primary-button workspace-primary-action" onClick={handleGenerateQuiz} disabled={isLoadingQuiz}>
+                  {isLoadingQuiz ? "Building quiz..." : "Generate Quiz"}
+                </button>
+                {quizState.message ? <div className="summary-card"><h3>Quiz status</h3><div className="queue-meta">{quizState.message}</div></div> : null}
+                {quizState.quiz?.length ? (
+                  <>
+                    <div className="quiz-list workspace-list-large">
+                      {quizState.quiz.map((question, index) => (
+                        <div key={question.id} className="quiz-card">
+                          <h3>{index + 1}. {question.q}</h3>
+                          <div className="quiz-meta">Concept: {question.concept}</div>
+                          {question.options.map((option, optionIndex) => (
+                            <label key={`${question.id}-${optionIndex}`} className="quiz-option">
+                              <input
+                                type="radio"
+                                name={question.id}
+                                checked={quizAnswers[question.id] === optionIndex}
+                                onChange={() => setQuizAnswers((current) => ({ ...current, [question.id]: optionIndex }))}
+                              />
+                              <span>{option}</span>
+                            </label>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="quiz-actions">
+                      <button className="primary-button" onClick={handleSubmitQuiz}>Check Quiz And Update Confidence</button>
+                      <button className="ghost-button" onClick={handleGenerateQuiz} disabled={isLoadingQuiz}>Refresh Quiz</button>
+                    </div>
+                    {quizResult ? (
+                      <div className="summary-card">
+                        <h3>Quiz complete</h3>
+                        <div className="queue-meta">
+                          {quizResult.correctCount} of {quizResult.answeredCount} answered concepts were correct.
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="queue-item">
+                    <h3>No quiz loaded</h3>
+                    <div className="queue-meta">Generate a quiz to turn this graph into a feedback loop instead of a static picture.</div>
+                  </div>
+                )}
+              </>
+            ) : null}
+
+            {rightPanel === "inspector" ? (
+              <>
             <p className="panel-title">Inspector</p>
             {selectedNode ? (
               <>
@@ -1479,16 +1917,12 @@ export default function App() {
                       onChange={(event) => setNodeEditForm((current) => ({ ...current, summary: event.target.value }))}
                       placeholder="What this concept means in your own words"
                     />
-                    <select
-                      className="text-input"
+                    <SelectControl
                       value={nodeEditForm.masteryState}
-                      onChange={(event) => setNodeEditForm((current) => ({ ...current, masteryState: event.target.value }))}
-                    >
-                      <option value="new">New</option>
-                      <option value="seen">Seen</option>
-                      <option value="understood">Understood</option>
-                      <option value="verified">Verified</option>
-                    </select>
+                      onChange={(value) => setNodeEditForm((current) => ({ ...current, masteryState: value }))}
+                      options={MASTERY_OPTIONS}
+                      ariaLabel="Mastery state"
+                    />
                     <button className="secondary-button" type="button" disabled={isSavingNode || !nodeEditForm.label.trim()} onClick={handleSaveNodeEdits}>
                       {isSavingNode ? "Saving..." : "Save Node Edits"}
                     </button>
@@ -1499,12 +1933,15 @@ export default function App() {
                       <span>Use this when two {selectedNode.type} nodes describe the same thing. The current node is hidden from this session after merge.</span>
                     </div>
                     <div className="import-form">
-                      <select className="text-input" value={mergeTargetId} onChange={(event) => setMergeTargetId(event.target.value)}>
-                        <option value="">Merge into...</option>
-                        {mergeCandidateNodes.map((node) => (
-                          <option key={node.id} value={node.id}>{node.label}</option>
-                        ))}
-                      </select>
+                      <SelectControl
+                        value={mergeTargetId}
+                        onChange={setMergeTargetId}
+                        options={[
+                          { value: "", label: "Merge into..." },
+                          ...mergeCandidateNodes.map((node) => ({ value: node.id, label: node.label }))
+                        ]}
+                        ariaLabel="Merge target"
+                      />
                       <button className="danger-button" type="button" disabled={isMergingNode || !mergeTargetId} onClick={handleMergeNode}>
                         {isMergingNode ? "Merging..." : "Merge Into Target"}
                       </button>
@@ -1538,18 +1975,23 @@ export default function App() {
                     )) : <div className="queue-meta">No visible relationships beyond the current hierarchy.</div>}
                   </div>
                   <div className="import-form">
-                    <select className="text-input" value={relationshipForm.targetId} onChange={(event) => setRelationshipForm((current) => ({ ...current, targetId: event.target.value }))}>
-                      <option value="">Connect to...</option>
-                      {(graphState?.nodes ?? []).filter((node) => node.id !== selectedNode.id && visibleNodeTypes.includes(node.type)).map((node) => (
-                        <option key={node.id} value={node.id}>{node.label}</option>
-                      ))}
-                    </select>
-                    <select className="text-input" value={relationshipForm.type} onChange={(event) => setRelationshipForm((current) => ({ ...current, type: event.target.value }))}>
-                      <option value="related">Related</option>
-                      <option value="prerequisite">Prerequisite</option>
-                      <option value="supports">Supports</option>
-                      <option value="contrasts">Contrasts</option>
-                    </select>
+                    <SelectControl
+                      value={relationshipForm.targetId}
+                      onChange={(value) => setRelationshipForm((current) => ({ ...current, targetId: value }))}
+                      options={[
+                        { value: "", label: "Connect to..." },
+                        ...(graphState?.nodes ?? [])
+                          .filter((node) => node.id !== selectedNode.id && visibleNodeTypes.includes(node.type))
+                          .map((node) => ({ value: node.id, label: node.label }))
+                      ]}
+                      ariaLabel="Relationship target"
+                    />
+                    <SelectControl
+                      value={relationshipForm.type}
+                      onChange={(value) => setRelationshipForm((current) => ({ ...current, type: value }))}
+                      options={RELATIONSHIP_TYPE_OPTIONS}
+                      ariaLabel="Relationship type"
+                    />
                     <input className="text-input" placeholder="Optional relationship label" value={relationshipForm.label} onChange={(event) => setRelationshipForm((current) => ({ ...current, label: event.target.value }))} />
                     <button className="secondary-button" disabled={isSavingRelationship || !relationshipForm.targetId} onClick={handleSaveRelationship}>
                       {isSavingRelationship ? "Saving..." : "Add Relationship"}
@@ -1560,12 +2002,17 @@ export default function App() {
                   <h3>Concept Bridge</h3>
                   <div className="queue-meta">Find how this node connects to another part of the graph.</div>
                   <div className="import-form">
-                    <select className="text-input" value={intersectionTargetId} onChange={(event) => setIntersectionTargetId(event.target.value)}>
-                      <option value="">Compare with...</option>
-                      {(graphState?.nodes ?? []).filter((node) => node.id !== selectedNode.id && visibleNodeTypes.includes(node.type)).map((node) => (
-                        <option key={node.id} value={node.id}>{node.label}</option>
-                      ))}
-                    </select>
+                    <SelectControl
+                      value={intersectionTargetId}
+                      onChange={setIntersectionTargetId}
+                      options={[
+                        { value: "", label: "Compare with..." },
+                        ...(graphState?.nodes ?? [])
+                          .filter((node) => node.id !== selectedNode.id && visibleNodeTypes.includes(node.type))
+                          .map((node) => ({ value: node.id, label: node.label }))
+                      ]}
+                      ariaLabel="Bridge comparison target"
+                    />
                     <button className="secondary-button" disabled={isIntersecting || !intersectionTargetId} onClick={handleIntersect}>
                       {isIntersecting ? "Finding bridge..." : "Find Bridge"}
                     </button>
@@ -1612,7 +2059,10 @@ export default function App() {
                 </div>
               </div>
             )}
-          </section>
+              </>
+            ) : null}
+            </section>
+          )}
         </aside>
       </div>
     </div>

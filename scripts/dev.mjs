@@ -6,6 +6,16 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, "..");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const spawnConfig =
+  process.platform === "win32"
+    ? {
+        command: "cmd.exe",
+        args: ["/d", "/s", "/c", npmCommand, "run", "dev"]
+      }
+    : {
+        command: npmCommand,
+        args: ["run", "dev"]
+      };
 
 const processes = [
   { name: "server", cwd: resolve(rootDir, "server"), color: "\x1b[36m" },
@@ -30,7 +40,7 @@ function shutdown(code = 0) {
 }
 
 for (const processConfig of processes) {
-  const child = spawn(npmCommand, ["run", "dev"], {
+  const child = spawn(spawnConfig.command, spawnConfig.args, {
     cwd: processConfig.cwd,
     env: process.env,
     stdio: ["inherit", "pipe", "pipe"]
