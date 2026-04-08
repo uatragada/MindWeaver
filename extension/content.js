@@ -1,0 +1,71 @@
+const MAX_EXCERPT_CHARS = 280;
+const MAX_CONTENT_CHARS = 16000;
+const SKIPPED_HOST_PARTS = [
+  "localhost",
+  "127.0.0.1",
+  "mail.",
+  "accounts.",
+  "login.",
+  "paypal.com",
+  "stripe.com",
+  "bank",
+  "chase.com",
+  "wellsfargo.com",
+  "capitalone.com"
+];
+
+function getMeta(name) {
+  const el = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
+  return el?.getAttribute("content") || "";
+}
+
+function shouldSkipPage() {
+  const host = location.hostname.toLowerCase();
+  if (!["http:", "https:"].includes(location.protocol)) return true;
+  if (SKIPPED_HOST_PARTS.some((part) => host.includes(part))) return true;
+  if (document.querySelector('input[type="password"]')) return true;
+  return false;
+}
+
+function extractKeywords() {
+  const kw = getMeta("keywords");
+  if (!kw) return [];
+  return kw.split(",").map(s => s.trim()).filter(Boolean);
+}
+
+function getReadableText() {
+  const preferredText = [
+    document.querySelector("article"),
+    document.querySelector("main"),
+    document.querySelector('[role="main"]')
+  ]
+    .map((node) => node?.innerText || "")
+    .map((text) => text.replace(/\s+/g, " ").trim())
+    .find((text) => text.length > 500);
+
+  if (preferredText) return preferredText;
+  return (document.body?.innerText || "").replace(/\s+/g, " ").trim();
+}
+
+function extractExcerpt() {
+  const desc = getMeta("description");
+  if (desc) return desc;
+  const text = getReadableText();
+  return text.slice(0, MAX_EXCERPT_CHARS);
+}
+
+function extractContent() {
+  return getReadableText().slice(0, MAX_CONTENT_CHARS);
+}
+
+if (!shouldSkipPage()) {
+  const payload = {
+    url: location.href,
+    title: document.title || "",
+    keywords: extractKeywords(),
+    excerpt: extractExcerpt(),
+    content: extractContent()
+  };
+
+  chrome.runtime.sendMessage({ type: "PAGE_EXTRACTED", payload });
+}

@@ -1,0 +1,20 @@
+{
+  "goal": "Build a stronger mental model of event-driven systems and data pipelines",
+  "sources": [
+    {
+      "sourceType": "note",
+      "title": "Event-driven architecture note",
+      "content": "Event-driven architecture is a design style where systems communicate through events instead of tight request-response coupling. Producers emit events when meaningful state changes occur, and consumers subscribe to react asynchronously. This improves decoupling, resilience, and scalability, but it also introduces challenges around idempotency, ordering, delivery guarantees, retries, and observability. A useful mental model is to think of events as facts that something happened, not commands that another system should perform work."
+    },
+    {
+      "sourceType": "youtube",
+      "title": "Kafka transcript excerpt",
+      "content": "Apache Kafka is a distributed event streaming platform built around partitions, offsets, and durable logs. Messages are appended to partitioned logs and consumers track offsets to know where they are in the stream. Kafka adds durability and replayability to event-driven systems, which makes it useful for pipelines, analytics, and integration between services. Important concepts include producers, consumers, brokers, topics, partition keys, consumer groups, and retention policies."
+    },
+    {
+      "sourceType": "pdf",
+      "title": "Data pipeline reliability extract",
+      "content": "Reliable data pipelines depend on clear contracts between producers and consumers, durable storage, retry semantics, and monitoring. Teams often need idempotent writes, dead-letter queues, backpressure handling, and schema versioning to keep pipelines trustworthy as systems change. Pipeline reliability is not only about moving data successfully; it is also about making failures visible, recoverable, and auditable. Strong observability, lineage, and replay strategies help teams maintain confidence in the system over time."
+    }
+  ]
+}

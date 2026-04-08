@@ -1,0 +1,47 @@
+node_modules/
+**/node_modules/
+server/node_modules/
+web/node_modules/
+web/dist/
+
+# Local secrets
+.env
+.env.*
+.env.local
+server/.env
+server/.env.*
+server/.env.local
+web/.env
+web/.env.*
+web/.env.local
+extension/.env
+extension/.env.*
+extension/.env.local
+!.env.example
+!server/.env.example
+!web/.env.example
+!extension/.env.example
+
+# Local user data and generated runtime files
+server/data.json
+server/*.local.json
+server/backups/
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Private key/certificate material
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
