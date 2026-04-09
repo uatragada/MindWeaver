@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "setup": "npm --prefix server install && npm --prefix web install",
-    "dev": "node scripts/dev.mjs",
-    "dev:server": "npm --prefix server run dev",
+    "setup": "node scripts/ensure-env.mjs && npm --prefix server install && npm --prefix web install",
+    "dev": "node scripts/ensure-env.mjs && node scripts/dev.mjs",
+    "dev:server": "node scripts/ensure-env.mjs && npm --prefix server run dev",
     "dev:web": "npm --prefix web run dev",
     "build": "npm --prefix web run build",
-    "start": "npm --prefix server start",
+    "start": "node scripts/ensure-env.mjs && npm --prefix server start",
     "test": "npm --prefix server test",
     "check": "npm test && npm run build",
     "eval:fixtures": "npm --prefix server run eval:fixtures"

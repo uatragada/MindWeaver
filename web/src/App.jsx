@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import "./app.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? (window.location.port === "5197" ? "http://localhost:3001" : window.location.origin);
+const STATS_REFRESH_MS = 35_000;
 const visibleNodeTypes = ["goal", "domain", "skill", "concept"];
 
 function useQueryParam(name) {
@@ -430,7 +431,7 @@ export default function App() {
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const [isDeletingArtifact, setIsDeletingArtifact] = useState(false);
 
-  const loadHomeData = async () => {
+  const loadHomeData = useCallback(async () => {
     setHomeErrorMessage("");
 
     try {
@@ -443,11 +444,16 @@ export default function App() {
     } catch (error) {
       setHomeErrorMessage(`${error.message}. Start the MindWeaver app, then refresh this page.`);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    loadHomeData();
-  }, []);
+    void loadHomeData();
+    const intervalId = window.setInterval(() => {
+      void loadHomeData();
+    }, STATS_REFRESH_MS);
+
+    return () => window.clearInterval(intervalId);
+  }, [loadHomeData]);
 
   useEffect(() => {
     if (!graphContainerRef.current) return;
@@ -464,7 +470,7 @@ export default function App() {
     return () => observer.disconnect();
   }, []);
 
-  const loadGraph = async () => {
+  const loadGraph = useCallback(async () => {
     if (!sessionId) return;
     setIsLoadingGraph(true);
     setErrorMessage("");
@@ -484,11 +490,18 @@ export default function App() {
     } finally {
       setIsLoadingGraph(false);
     }
-  };
+  }, [sessionId]);
 
   useEffect(() => {
-    loadGraph();
-  }, [sessionId]);
+    if (!sessionId) return undefined;
+
+    void loadGraph();
+    const intervalId = window.setInterval(() => {
+      void loadGraph();
+    }, STATS_REFRESH_MS);
+
+    return () => window.clearInterval(intervalId);
+  }, [loadGraph, sessionId]);
 
   const handleCreateSession = async (event) => {
     event.preventDefault();
