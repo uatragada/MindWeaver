@@ -11,6 +11,9 @@
   --mw-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
   --mw-radius-lg: 8px;
   --mw-radius-md: 8px;
+  --mw-control-bg: rgba(255, 255, 255, 0.055);
+  --mw-control-hover: rgba(255, 255, 255, 0.1);
+  --mw-control-selected: rgba(255, 255, 255, 0.16);
 }
 
 html,
@@ -45,6 +48,14 @@ button {
 .page-shell {
   min-height: 100vh;
   padding: clamp(12px, 1.5vw, 20px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.page-shell.is-workspace {
+  height: 100vh;
+  overflow: hidden;
 }
 
 .empty-state {
@@ -57,6 +68,148 @@ button {
   box-shadow: var(--mw-shadow);
 }
 
+.map-tabs-shell {
+  padding: 14px 16px;
+  background: var(--mw-surface-strong);
+}
+
+.map-tabs-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.map-tabs-header h2 {
+  margin: 6px 0 0;
+  font-size: 1.2rem;
+}
+
+.map-tabs-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--mw-muted);
+  font-size: 0.84rem;
+}
+
+.map-tabs-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  margin-top: 14px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.map-home-tab,
+.map-tab {
+  flex: 0 0 auto;
+}
+
+.map-home-tab {
+  min-width: 112px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--mw-radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--mw-text);
+  padding: 0 14px;
+  font-weight: 700;
+}
+
+.map-home-tab.is-active {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.map-tab {
+  display: flex;
+  align-items: stretch;
+  min-width: 260px;
+  max-width: 320px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--mw-radius-md);
+  background: rgba(255, 255, 255, 0.035);
+  overflow: hidden;
+}
+
+.map-tab.is-active {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.map-tab-main {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mw-text);
+  text-align: left;
+  padding: 12px 14px;
+}
+
+.map-tab-main strong,
+.map-tab-main span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-tab-main span {
+  margin-top: 6px;
+  color: var(--mw-muted);
+  font-size: 0.82rem;
+}
+
+.map-tab-close {
+  width: 42px;
+  border: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--mw-muted);
+  font-size: 1.15rem;
+}
+
+.map-tab-close:hover,
+.map-tab-main:hover,
+.map-home-tab:hover,
+.map-reopen-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--mw-text);
+}
+
+.map-tab-create-form {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: min(360px, 100%);
+  margin-left: auto;
+}
+
+.map-tab-input {
+  min-width: 180px;
+}
+
+.map-reopen-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--mw-muted);
+  font-size: 0.82rem;
+}
+
+.map-reopen-chip {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--mw-text);
+  padding: 7px 12px;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: minmax(250px, 300px) minmax(520px, 1fr) minmax(360px, 460px);
@@ -64,6 +217,13 @@ button {
   min-height: calc(100vh - 32px);
   align-items: start;
   transition: grid-template-columns 0.22s ease;
+}
+
+.page-shell.is-workspace .app-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  align-items: stretch;
 }
 
 .app-shell.is-left-minimized {
@@ -101,6 +261,13 @@ button {
   padding-right: 2px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+.page-shell.is-workspace .left-rail,
+.page-shell.is-workspace .right-rail {
+  max-height: none;
+  min-height: 0;
+  height: 100%;
 }
 
 .left-rail > .panel {
@@ -171,6 +338,11 @@ button {
   gap: 18px;
   padding: 18px 0;
   transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.page-shell.is-workspace .rail-tab {
+  height: 100%;
+  min-height: 0;
 }
 
 .rail-tab:hover {
@@ -349,6 +521,11 @@ button {
   min-height: calc(100vh - 32px);
 }
 
+.page-shell.is-workspace .graph-card {
+  min-height: 0;
+  height: 100%;
+}
+
 .graph-toolbar {
   display: grid;
   grid-template-columns: minmax(180px, 0.8fr) minmax(480px, 1.2fr);
@@ -439,6 +616,10 @@ button {
   background: #050505;
 }
 
+.page-shell.is-workspace .graph-canvas {
+  min-height: 0;
+}
+
 .graph-empty {
   position: absolute;
   inset: 50%;
@@ -451,6 +632,33 @@ button {
   background: rgba(12, 12, 12, 0.92);
   box-shadow: var(--mw-shadow);
   text-align: center;
+}
+
+.graph-loading-overlay {
+  position: absolute;
+  inset: 16px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 22px;
+  border-radius: var(--mw-radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(5, 5, 5, 0.84);
+  box-shadow: var(--mw-shadow);
+  text-align: center;
+}
+
+.graph-loading-overlay h3 {
+  margin: 10px 0 0;
+  font-size: 1.2rem;
+}
+
+.graph-loading-overlay p:not(.panel-title) {
+  max-width: 420px;
+  color: var(--mw-muted);
+  line-height: 1.55;
 }
 
 .graph-empty h3 {
@@ -734,11 +942,15 @@ button {
 .text-input,
 .text-area {
   width: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: var(--mw-radius-md);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--mw-control-bg);
   color: var(--mw-text);
   padding: 12px 14px;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease;
 }
 
 select.text-input {
@@ -747,7 +959,7 @@ select.text-input {
   padding-right: 34px;
   line-height: 1.25;
   text-overflow: ellipsis;
-  background-color: rgba(255, 255, 255, 0.055);
+  background-color: rgba(255, 255, 255, 0.065);
 }
 
 select.text-input option {
@@ -756,14 +968,14 @@ select.text-input option {
 }
 
 select.text-input option:checked {
-  background: #f4f4f4 linear-gradient(#f4f4f4, #f4f4f4);
-  box-shadow: 0 0 0 999px #f4f4f4 inset;
-  color: #050505;
+  background: #1a1a1a linear-gradient(#1a1a1a, #1a1a1a);
+  box-shadow: 0 0 0 999px #1a1a1a inset;
+  color: var(--mw-text);
 }
 
 select.text-input option:hover {
-  background: #2a2a2a;
-  box-shadow: 0 0 0 999px #2a2a2a inset;
+  background: #262626;
+  box-shadow: 0 0 0 999px #262626 inset;
   color: var(--mw-text);
 }
 
@@ -817,7 +1029,7 @@ select.text-input option:hover {
   padding: 6px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: var(--mw-radius-md);
-  background: #101010;
+  background: rgba(12, 12, 12, 0.98);
   box-shadow: 0 18px 36px rgba(0, 0, 0, 0.48);
 }
 
@@ -840,18 +1052,20 @@ select.text-input option:hover {
 .select-option:hover,
 .select-option:focus {
   outline: 0;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--mw-control-hover);
 }
 
 .select-option.is-selected {
-  background: #f4f4f4;
-  color: #050505;
+  background: var(--mw-control-selected);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  color: var(--mw-text);
 }
 
 .text-input:focus,
 .text-area:focus {
   outline: 2px solid rgba(255, 255, 255, 0.32);
   border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .text-area {
@@ -1253,6 +1467,16 @@ select.text-input option:hover {
     padding: 14px;
   }
 
+  .map-tabs-header,
+  .map-tabs-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .map-tab-create-form {
+    min-width: 320px;
+  }
+
   .app-shell {
     grid-template-columns: 1fr;
   }
@@ -1343,6 +1567,24 @@ select.text-input option:hover {
   .small-button {
     width: 100%;
     justify-content: center;
+  }
+
+  .map-tabs-row {
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .map-home-tab,
+  .map-tab,
+  .map-tab-create-form {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+
+  .map-tab-create-form {
+    flex-direction: column;
+    margin-left: 0;
   }
 
   .graph-canvas {

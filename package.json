@@ -11,7 +11,13 @@
     "build": "npm --prefix web run build",
     "start": "node scripts/ensure-env.mjs && npm --prefix server start",
     "test": "npm --prefix server test",
+    "test:extension:unit": "node --test extension/tests/mindweaver-client.test.js extension/tests/background-controller.test.js",
+    "test:extension:integration": "node --test extension/tests/integration.test.js",
+    "test:extension": "npm run test:extension:unit && npm run test:extension:integration",
     "check": "npm test && npm run build",
     "eval:fixtures": "npm --prefix server run eval:fixtures"
+  },
+  "devDependencies": {
+    "playwright": "^1.59.1"
   }
 }

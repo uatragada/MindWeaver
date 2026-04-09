@@ -109,7 +109,77 @@ test("POST /api/sessions creates a session and goal node", async () => {
     assert.ok(body.goalId);
     assert.equal(ctx.db.data.sessions.length, 1);
     assert.equal(ctx.db.data.goals.length, 1);
+    assert.equal(ctx.db.data.preferences.activeSessionId, body.id);
     assert.equal(ctx.db.data.nodes.some((node) => node.id === body.goalId && node.type === "goal"), true);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("shared session target API tracks the active map across create, switch, and end", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const firstResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "First map" })
+    });
+    const first = await firstResponse.json();
+
+    const secondResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Second map" })
+    });
+    const second = await secondResponse.json();
+
+    const initialTargetResponse = await fetch(`${ctx.baseUrl}/api/session-target`);
+    const initialTarget = await initialTargetResponse.json();
+    assert.equal(initialTargetResponse.status, 200);
+    assert.equal(initialTarget.activeSessionId, second.id);
+    assert.equal(initialTarget.sessions.some((session) => session.id === second.id && session.isActiveTarget), true);
+
+    const switchResponse = await fetch(`${ctx.baseUrl}/api/session-target`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: first.id })
+    });
+    const switched = await switchResponse.json();
+    assert.equal(switchResponse.status, 200);
+    assert.equal(switched.activeSessionId, first.id);
+    assert.equal(switched.lastSessionId, first.id);
+
+    const endResponse = await fetch(`${ctx.baseUrl}/api/sessions/${first.id}/end`, { method: "POST" });
+    assert.equal(endResponse.status, 200);
+
+    const clearedResponse = await fetch(`${ctx.baseUrl}/api/session-target`);
+    const cleared = await clearedResponse.json();
+    assert.equal(clearedResponse.status, 200);
+    assert.equal(cleared.activeSessionId, null);
+    assert.equal(cleared.lastSessionId, first.id);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("health endpoint allows chrome extension origins to reach the local API", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const response = await fetch(`${ctx.baseUrl}/api/health`, {
+      headers: {
+        Origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+      }
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(
+      response.headers.get("access-control-allow-origin"),
+      "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+    );
   } finally {
     await ctx.close();
   }
@@ -246,6 +316,11 @@ test("product endpoints expose health, recent sessions, and local deletion", asy
     const sessionsBody = await sessionsResponse.json();
     assert.equal(sessionsResponse.status, 200);
     assert.equal(sessionsBody.sessions.some((entry) => entry.id === session.id && entry.sourceCount === 1), true);
+
+    const sessionTargetResponse = await fetch(`${ctx.baseUrl}/api/session-target`);
+    const sessionTarget = await sessionTargetResponse.json();
+    assert.equal(sessionTargetResponse.status, 200);
+    assert.equal(sessionTarget.activeSessionId, session.id);
 
     const exportJsonResponse = await fetch(`${ctx.baseUrl}/api/sessions/${session.id}/export`);
     const exportJson = await exportJsonResponse.json();

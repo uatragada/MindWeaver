@@ -2,26 +2,58 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <style>
-      body { font-family: system-ui; margin: 14px; width: 320px; background: #0b1525; color: #e7ecf5; }
-      button { width: 100%; padding: 10px; margin: 6px 0; border: 0; border-radius: 12px; font-weight: 700; }
-      button.primary { background: #ffb067; color: #1b130c; }
-      button.secondary { background: rgba(124, 225, 255, 0.18); color: #e7ecf5; }
-      button:disabled { opacity: 0.65; cursor: wait; }
-      .row { margin: 8px 0; font-size: 12px; color: #97a4ba; line-height: 1.4; }
-      input { width: 100%; padding: 8px; box-sizing: border-box; border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.07); color: #e7ecf5; }
-      h3 { margin: 0 0 10px; }
-    </style>
+    <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <h3>MindWeaver</h3>
-    <div class="row" id="status">Status: …</div>
-    <div class="row" id="lastCapture">Last capture: …</div>
-    <input id="goal" placeholder="Optional goal (e.g., Learn RL)" />
-    <button id="capture" class="primary">Save Current Page</button>
-    <button id="toggle" class="secondary">Start New Map</button>
-    <button id="open" class="secondary">Open MindWeaver</button>
-    <div class="row">MindWeaver only saves a page when you click "Save Current Page" or save a selected highlight from the context menu. It sends page title, URL, excerpt, and up to 16k characters of readable text to your local server, while skipping localhost, login/password, and common financial/account pages.</div>
-    <script src="popup.js"></script>
+    <div class="popup-shell">
+      <header class="popup-header">
+        <div class="popup-eyebrow">MindWeaver</div>
+        <h1>Capture into your active map</h1>
+        <p>Save the current page or selected text into the same local graph you use in the app.</p>
+      </header>
+
+      <section class="popup-panel popup-status-panel">
+        <div class="info-card info-card-primary">
+          <span class="info-label">Capture target</span>
+          <strong class="info-value info-value-strong" id="status">…</strong>
+        </div>
+        <div class="info-grid">
+          <div class="info-card">
+            <span class="info-label">Workspace</span>
+            <span class="info-value" id="workspace">…</span>
+          </div>
+          <div class="info-card">
+            <span class="info-label">Last save</span>
+            <span class="info-value" id="lastCapture">…</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="popup-panel popup-form-panel">
+        <label class="field-label" for="target">
+          <span>Destination map</span>
+        </label>
+        <div class="select-wrap">
+          <select id="target"></select>
+        </div>
+
+        <label class="field-label" for="goal">
+          <span>New map goal</span>
+        </label>
+        <input id="goal" placeholder="Optional new map goal (for example, Learn RL)" />
+      </section>
+
+      <div class="button-stack">
+        <button id="capture" class="primary">Save Current Page</button>
+        <div class="button-grid">
+          <button id="create" class="secondary">Create New Map</button>
+          <button id="open" class="secondary">Open MindWeaver</button>
+        </div>
+        <button id="end" class="danger">End Active Map</button>
+      </div>
+
+      <p class="footer-note">MindWeaver only saves a page when you ask it to. It sends page title, URL, excerpt, and up to 16k characters of readable text to your local server while skipping localhost, login/password, and common account or financial pages.</p>
+    </div>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

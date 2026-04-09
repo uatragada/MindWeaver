@@ -1,6 +1,7 @@
-(() => {
+ (async () => {
   const MAX_EXCERPT_CHARS = 280;
   const MAX_CONTENT_CHARS = 16000;
+  const ALLOW_LOCAL_CAPTURE_STORAGE_KEY = "mindweaverAllowLocalPageCapture";
   const SKIPPED_HOST_PARTS = [
     "localhost",
     "127.0.0.1",
@@ -20,10 +21,21 @@
     return el?.getAttribute("content") || "";
   }
 
-  function getSkipReason() {
+  async function getAllowLocalCapture() {
+    try {
+      const stored = await chrome.storage.local.get([ALLOW_LOCAL_CAPTURE_STORAGE_KEY]);
+      return stored[ALLOW_LOCAL_CAPTURE_STORAGE_KEY] === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function getSkipReason({ allowLocalCapture }) {
     const host = location.hostname.toLowerCase();
     if (!["http:", "https:"].includes(location.protocol)) return "MindWeaver only saves normal web pages.";
-    if (SKIPPED_HOST_PARTS.some((part) => host.includes(part))) return "Skipped this page because it looks private, local, financial, or account-related.";
+    if (!allowLocalCapture && SKIPPED_HOST_PARTS.some((part) => host.includes(part))) {
+      return "Skipped this page because it looks private, local, financial, or account-related.";
+    }
     if (document.querySelector('input[type="password"]')) return "Skipped this page because it contains a password field.";
     return "";
   }
@@ -54,7 +66,9 @@
     return readableText.slice(0, MAX_EXCERPT_CHARS);
   }
 
-  const skipReason = getSkipReason();
+  const skipReason = getSkipReason({
+    allowLocalCapture: await getAllowLocalCapture()
+  });
   if (skipReason) {
     return {
       ok: false,

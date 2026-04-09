@@ -65,6 +65,13 @@ That starts:
 
 If you just want to kick the tires, the demo map is the best starting point.
 
+## Windows Shortcuts
+
+If you want double-click shortcuts on Windows:
+
+- `quick-start-first-time.bat`: installs dependencies, prompts for `OPENAI_API_KEY`, writes `server/.env.local`, asks where `chrome.exe` lives, and launches Chrome with the unpacked extension loaded.
+- `quick-start-dev.bat`: starts the backend and web dev server together so the app is available at `http://127.0.0.1:3001` and `http://127.0.0.1:5197`.
+
 ## Production-Style Local Run
 
 If you want a single-server local run that serves the built app through Express:

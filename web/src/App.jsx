@@ -1,13 +1,85 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import "./app.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? (window.location.port === "5197" ? "http://localhost:3001" : window.location.origin);
 const STATS_REFRESH_MS = 35_000;
 const visibleNodeTypes = ["goal", "domain", "skill", "concept"];
+const OPEN_TABS_STORAGE_KEY = "mindweaver:open-map-tabs:v1";
+const TAB_VIEW_STORAGE_KEY = "mindweaver:tab-view-state:v1";
+const EMPTY_QUIZ_STATE = { quiz: [], message: "" };
+const EMPTY_IMPORT_FORM = {
+  sourceType: "note",
+  title: "",
+  url: "",
+  content: ""
+};
+const DEFAULT_TAB_VIEW = {
+  selectedNodeId: null,
+  rightPanel: "inspector",
+  leftRailMinimized: false,
+  rightRailMinimized: true,
+  nodeSearch: "",
+  nodeTypeFilter: "all"
+};
 
-function useQueryParam(name) {
-  return useMemo(() => new URLSearchParams(window.location.search).get(name), [name]);
+function getSessionIdFromLocation() {
+  return new URLSearchParams(window.location.search).get("sessionId");
+}
+
+function buildSessionUrl(sessionId) {
+  const url = new URL(window.location.href);
+  if (sessionId) {
+    url.searchParams.set("sessionId", sessionId);
+  } else {
+    url.searchParams.delete("sessionId");
+  }
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function readStoredJson(key, fallbackValue) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallbackValue;
+  } catch {
+    return fallbackValue;
+  }
+}
+
+function useLocalStorageState(key, initialValue) {
+  const [state, setState] = useState(() => {
+    const fallbackValue = typeof initialValue === "function" ? initialValue() : initialValue;
+    return readStoredJson(key, fallbackValue);
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem(key, JSON.stringify(state));
+  }, [key, state]);
+
+  return [state, setState];
+}
+
+function useSessionRoute() {
+  const [sessionId, setSessionId] = useState(() => getSessionIdFromLocation());
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setSessionId(getSessionIdFromLocation());
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  const navigateToSession = useCallback((nextSessionId, { replace = false } = {}) => {
+    const targetSessionId = nextSessionId || null;
+    const nextUrl = buildSessionUrl(targetSessionId);
+    const method = replace ? "replaceState" : "pushState";
+    window.history[method]({}, "", nextUrl);
+    setSessionId(targetSessionId);
+  }, []);
+
+  return [sessionId, navigateToSession];
 }
 
 async function fetchJson(url, options) {
@@ -368,13 +440,28 @@ function createNodeCollisionForce() {
 }
 
 export default function App() {
-  const sessionId = useQueryParam("sessionId");
+  const [sessionId, navigateToSession] = useSessionRoute();
   const fgRef = useRef(null);
   const graphContainerRef = useRef(null);
+  const tabViewHydrationRef = useRef(null);
+  const sessionCacheHydrationRef = useRef(null);
+  const graphFitTimersRef = useRef([]);
+  const pendingGraphFitRef = useRef(false);
 
   const [graphState, setGraphState] = useState(null);
   const [healthState, setHealthState] = useState(null);
   const [recentSessions, setRecentSessions] = useState([]);
+  const [sessionTargetState, setSessionTargetState] = useState({
+    activeSessionId: null,
+    lastSessionId: null,
+    activeSession: null,
+    lastSession: null,
+    sessions: [],
+    workspaces: []
+  });
+  const [openTabs, setOpenTabs] = useLocalStorageState(OPEN_TABS_STORAGE_KEY, []);
+  const [tabViewState, setTabViewState] = useLocalStorageState(TAB_VIEW_STORAGE_KEY, {});
+  const [sessionCache, setSessionCache] = useState({});
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [rightPanel, setRightPanel] = useState("inspector");
   const [leftRailMinimized, setLeftRailMinimized] = useState(false);
@@ -394,17 +481,13 @@ export default function App() {
   const [isLoadingGaps, setIsLoadingGaps] = useState(false);
   const [gapSummary, setGapSummary] = useState(null);
   const [isLoadingQuiz, setIsLoadingQuiz] = useState(false);
-  const [quizState, setQuizState] = useState({ quiz: [], message: "" });
+  const [quizState, setQuizState] = useState(EMPTY_QUIZ_STATE);
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizResult, setQuizResult] = useState(null);
   const [isImporting, setIsImporting] = useState(false);
-  const [importForm, setImportForm] = useState({
-    sourceType: "note",
-    title: "",
-    url: "",
-    content: ""
-  });
+  const [importForm, setImportForm] = useState(EMPTY_IMPORT_FORM);
   const [startGoal, setStartGoal] = useState("");
+  const [tabComposerGoal, setTabComposerGoal] = useState("");
   const [graphSize, setGraphSize] = useState({ width: 900, height: 640 });
   const [nodeSearch, setNodeSearch] = useState("");
   const [nodeTypeFilter, setNodeTypeFilter] = useState("all");
@@ -430,20 +513,34 @@ export default function App() {
   const [isMergingNode, setIsMergingNode] = useState(false);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const [isDeletingArtifact, setIsDeletingArtifact] = useState(false);
+  const [isGraphViewportReady, setIsGraphViewportReady] = useState(false);
+  const deferredNodeSearch = useDeferredValue(nodeSearch);
 
   const loadHomeData = useCallback(async () => {
     setHomeErrorMessage("");
 
     try {
-      const [health, sessions] = await Promise.all([
+      const [health, targetState] = await Promise.all([
         fetchJson(`${API_BASE}/api/health`),
-        fetchJson(`${API_BASE}/api/sessions?limit=8`)
+        fetchJson(`${API_BASE}/api/session-target?limit=24`)
       ]);
       setHealthState(health);
-      setRecentSessions(sessions.sessions ?? []);
+      setRecentSessions(targetState.sessions ?? []);
+      setSessionTargetState(targetState);
     } catch (error) {
       setHomeErrorMessage(`${error.message}. Start the MindWeaver app, then refresh this page.`);
     }
+  }, []);
+
+  const syncActiveSessionTarget = useCallback(async (nextSessionId) => {
+    const targetState = await fetchJson(`${API_BASE}/api/session-target`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: nextSessionId ?? null, limit: 24 })
+    });
+    setRecentSessions(targetState.sessions ?? []);
+    setSessionTargetState(targetState);
+    return targetState;
   }, []);
 
   useEffect(() => {
@@ -454,6 +551,59 @@ export default function App() {
 
     return () => window.clearInterval(intervalId);
   }, [loadHomeData]);
+
+  useEffect(() => {
+    const validSessionIds = new Set(recentSessions.map((session) => session.id));
+    if (sessionId) validSessionIds.add(sessionId);
+
+    setOpenTabs((current) => current.filter((entry) => validSessionIds.has(entry)));
+    setTabViewState((current) => Object.fromEntries(
+      Object.entries(current).filter(([entry]) => validSessionIds.has(entry))
+    ));
+    setSessionCache((current) => Object.fromEntries(
+      Object.entries(current).filter(([entry]) => validSessionIds.has(entry))
+    ));
+  }, [recentSessions, sessionId, setOpenTabs, setTabViewState]);
+
+  const openSessionTab = useCallback((nextSessionId) => {
+    if (!nextSessionId) return;
+    setOpenTabs((current) => (current.includes(nextSessionId) ? current : [...current, nextSessionId]));
+    startTransition(() => {
+      navigateToSession(nextSessionId);
+    });
+  }, [navigateToSession, setOpenTabs]);
+
+  const closeSessionTab = useCallback((closingSessionId) => {
+    const remainingTabs = openTabs.filter((entry) => entry !== closingSessionId);
+    setOpenTabs(remainingTabs);
+    setTabViewState((current) => {
+      const next = { ...current };
+      delete next[closingSessionId];
+      return next;
+    });
+    setSessionCache((current) => {
+      const next = { ...current };
+      delete next[closingSessionId];
+      return next;
+    });
+
+    if (closingSessionId !== sessionId) return;
+
+    const closingIndex = openTabs.indexOf(closingSessionId);
+    const fallbackSessionId = remainingTabs[closingIndex] ?? remainingTabs[closingIndex - 1] ?? null;
+    startTransition(() => {
+      navigateToSession(fallbackSessionId);
+    });
+  }, [navigateToSession, openTabs, sessionId, setOpenTabs, setTabViewState]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    setOpenTabs((current) => (current.includes(sessionId) ? current : [...current, sessionId]));
+    void syncActiveSessionTarget(sessionId).catch(() => {
+      // A failed sync should not block switching tabs inside the local app.
+    });
+  }, [sessionId, setOpenTabs, syncActiveSessionTarget]);
 
   useEffect(() => {
     if (!graphContainerRef.current) return;
@@ -470,15 +620,122 @@ export default function App() {
     return () => observer.disconnect();
   }, []);
 
-  const loadGraph = useCallback(async () => {
+  useEffect(() => {
+    if (!sessionId) {
+      setGraphState(null);
+      setProgressState(null);
+      setGapSummary(null);
+      setQuizState(EMPTY_QUIZ_STATE);
+      setQuizAnswers({});
+      setQuizResult(null);
+      setImportForm(EMPTY_IMPORT_FORM);
+      setChatQuestion("");
+      setChatAnswer(null);
+      setLearningSummary(null);
+      setBulkImportText("");
+      setSelectedNodeId(null);
+      setRightPanel(DEFAULT_TAB_VIEW.rightPanel);
+      setLeftRailMinimized(DEFAULT_TAB_VIEW.leftRailMinimized);
+      setRightRailMinimized(DEFAULT_TAB_VIEW.rightRailMinimized);
+      setNodeSearch(DEFAULT_TAB_VIEW.nodeSearch);
+      setNodeTypeFilter(DEFAULT_TAB_VIEW.nodeTypeFilter);
+      setIsGraphViewportReady(false);
+      return;
+    }
+
+    sessionCacheHydrationRef.current = sessionId;
+    const cachedSession = sessionCache[sessionId] ?? {};
+    const cachedTabView = tabViewState[sessionId] ?? DEFAULT_TAB_VIEW;
+    setGraphState(cachedSession.graphState ?? null);
+    setProgressState(cachedSession.progressState ?? null);
+    setGapSummary(cachedSession.gapSummary ?? cachedSession.graphState?.latestGapAnalysis ?? null);
+    setQuizState(cachedSession.quizState ?? EMPTY_QUIZ_STATE);
+    setQuizAnswers(cachedSession.quizAnswers ?? {});
+    setQuizResult(cachedSession.quizResult ?? null);
+    setImportForm(cachedSession.importForm ?? EMPTY_IMPORT_FORM);
+    setChatQuestion(cachedSession.chatQuestion ?? "");
+    setChatAnswer(cachedSession.chatAnswer ?? null);
+    setLearningSummary(cachedSession.learningSummary ?? null);
+    setBulkImportText(cachedSession.bulkImportText ?? "");
+    tabViewHydrationRef.current = sessionId;
+    setSelectedNodeId(cachedTabView.selectedNodeId ?? null);
+    setRightPanel(cachedTabView.rightPanel ?? DEFAULT_TAB_VIEW.rightPanel);
+    setLeftRailMinimized(cachedTabView.leftRailMinimized ?? DEFAULT_TAB_VIEW.leftRailMinimized);
+    setRightRailMinimized(cachedTabView.rightRailMinimized ?? DEFAULT_TAB_VIEW.rightRailMinimized);
+    setNodeSearch(cachedTabView.nodeSearch ?? DEFAULT_TAB_VIEW.nodeSearch);
+    setNodeTypeFilter(cachedTabView.nodeTypeFilter ?? DEFAULT_TAB_VIEW.nodeTypeFilter);
+  }, [sessionId]);
+
+  useEffect(() => {
     if (!sessionId) return;
+    if (tabViewHydrationRef.current === sessionId) {
+      tabViewHydrationRef.current = null;
+      return;
+    }
+
+    setTabViewState((current) => ({
+      ...current,
+      [sessionId]: {
+        selectedNodeId,
+        rightPanel,
+        leftRailMinimized,
+        rightRailMinimized,
+        nodeSearch,
+        nodeTypeFilter
+      }
+    }));
+  }, [leftRailMinimized, nodeSearch, nodeTypeFilter, rightPanel, rightRailMinimized, selectedNodeId, sessionId, setTabViewState]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    if (sessionCacheHydrationRef.current === sessionId) {
+      sessionCacheHydrationRef.current = null;
+      return;
+    }
+
+    setSessionCache((current) => ({
+      ...current,
+      [sessionId]: {
+        ...(current[sessionId] ?? {}),
+        graphState,
+        progressState,
+        gapSummary,
+        quizState,
+        quizAnswers,
+        quizResult,
+        importForm,
+        chatQuestion,
+        chatAnswer,
+        learningSummary,
+        bulkImportText
+      }
+    }));
+  }, [bulkImportText, chatAnswer, chatQuestion, gapSummary, graphState, importForm, learningSummary, progressState, quizAnswers, quizResult, quizState, sessionId]);
+
+  const loadGraph = useCallback(async (targetSessionId = sessionId) => {
+    if (!targetSessionId) return;
     setIsLoadingGraph(true);
     setErrorMessage("");
 
     try {
-      const data = await fetchJson(`${API_BASE}/api/graph/${encodeURIComponent(sessionId)}`);
+      const [data, progress] = await Promise.all([
+        fetchJson(`${API_BASE}/api/graph/${encodeURIComponent(targetSessionId)}`),
+        fetchJson(`${API_BASE}/api/progress/${encodeURIComponent(targetSessionId)}`).catch(() => null)
+      ]);
+
+      setSessionCache((current) => ({
+        ...current,
+        [targetSessionId]: {
+          ...(current[targetSessionId] ?? {}),
+          graphState: data,
+          progressState: progress,
+          gapSummary: current[targetSessionId]?.gapSummary ?? data.latestGapAnalysis ?? null
+        }
+      }));
+
+      if (targetSessionId !== sessionId) return;
+
       setGraphState(data);
-      const progress = await fetchJson(`${API_BASE}/api/progress/${encodeURIComponent(sessionId)}`).catch(() => null);
       if (progress) setProgressState(progress);
       setGapSummary((current) => current ?? data.latestGapAnalysis ?? null);
       setSelectedNodeId((current) => {
@@ -495,28 +752,44 @@ export default function App() {
   useEffect(() => {
     if (!sessionId) return undefined;
 
-    void loadGraph();
+    void loadGraph(sessionId);
     const intervalId = window.setInterval(() => {
-      void loadGraph();
+      void loadGraph(sessionId);
     }, STATS_REFRESH_MS);
 
     return () => window.clearInterval(intervalId);
   }, [loadGraph, sessionId]);
 
-  const handleCreateSession = async (event) => {
-    event.preventDefault();
+  const handleCreateSession = async (event, { fromTabs = false } = {}) => {
+    event?.preventDefault?.();
     setIsCreatingSession(true);
-    setHomeErrorMessage("");
+    if (fromTabs) {
+      setErrorMessage("");
+    } else {
+      setHomeErrorMessage("");
+    }
 
     try {
+      const goalValue = (fromTabs ? tabComposerGoal : startGoal).trim();
       const session = await fetchJson(`${API_BASE}/api/sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal: startGoal.trim() || null })
+        body: JSON.stringify({ goal: goalValue || null })
       });
-      window.location.assign(`${window.location.pathname}?sessionId=${encodeURIComponent(session.id)}`);
+      setStartGoal("");
+      setTabComposerGoal("");
+      await loadHomeData();
+      openSessionTab(session.id);
     } catch (error) {
-      setHomeErrorMessage(error.message);
+      if (fromTabs) {
+        if (sessionId) {
+          setErrorMessage(error.message);
+        } else {
+          setHomeErrorMessage(error.message);
+        }
+      } else {
+        setHomeErrorMessage(error.message);
+      }
     } finally {
       setIsCreatingSession(false);
     }
@@ -528,7 +801,8 @@ export default function App() {
 
     try {
       const session = await fetchJson(`${API_BASE}/api/demo-session`, { method: "POST" });
-      window.location.assign(`${window.location.pathname}?sessionId=${encodeURIComponent(session.id)}`);
+      await loadHomeData();
+      openSessionTab(session.id);
     } catch (error) {
       setHomeErrorMessage(error.message);
     } finally {
@@ -543,8 +817,8 @@ export default function App() {
 
     try {
       await fetchJson(`${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}/end`, { method: "POST" });
-      setStatusMessage("Session ended. You can still review, import, and quiz against the saved graph.");
-      await loadGraph();
+      setStatusMessage("Map ended. You can still review it here, and extension capture is no longer targeting this map.");
+      await loadGraph(sessionId);
       await loadHomeData();
     } catch (error) {
       setErrorMessage(error.message);
@@ -555,6 +829,7 @@ export default function App() {
 
   const handleDeleteSession = async () => {
     if (!sessionId) return;
+    const deletingSessionId = sessionId;
     const confirmed = window.confirm("Delete this local session, its sources, and session-specific graph data? This cannot be undone.");
     if (!confirmed) return;
 
@@ -562,8 +837,9 @@ export default function App() {
     setErrorMessage("");
 
     try {
-      await fetchJson(`${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
-      window.location.assign(window.location.pathname);
+      await fetchJson(`${API_BASE}/api/sessions/${encodeURIComponent(deletingSessionId)}`, { method: "DELETE" });
+      closeSessionTab(deletingSessionId);
+      await loadHomeData();
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
@@ -625,7 +901,11 @@ export default function App() {
         body: JSON.stringify({ confirm: true, backup })
       });
       setStatusMessage("Backup restored.");
-      window.location.assign(window.location.pathname);
+      setOpenTabs([]);
+      setTabViewState({});
+      setSessionCache({});
+      navigateToSession(null, { replace: true });
+      await loadHomeData();
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
@@ -654,7 +934,7 @@ export default function App() {
   const graphData = useMemo(() => {
     if (!graphState) return { nodes: [], links: [] };
 
-    const query = nodeSearch.trim().toLowerCase();
+    const query = deferredNodeSearch.trim().toLowerCase();
     const nodes = graphState.nodes.filter((node) => {
       if (!visibleNodeTypes.includes(node.type)) return false;
       if (nodeTypeFilter !== "all" && node.type !== nodeTypeFilter) return false;
@@ -671,29 +951,95 @@ export default function App() {
       }));
 
     return { nodes, links };
-  }, [graphState, nodeSearch, nodeTypeFilter]);
+  }, [deferredNodeSearch, graphState, nodeTypeFilter]);
+
+  const graphTopologySignature = useMemo(() => {
+    if (!graphData.nodes.length) return "empty";
+
+    const nodeIds = graphData.nodes
+      .map((node) => String(node.id))
+      .sort();
+    const linkKeys = graphData.links
+      .map((link) => {
+        const sourceId = typeof link.source === "object" ? link.source.id : link.source;
+        const targetId = typeof link.target === "object" ? link.target.id : link.target;
+        return `${sourceId}->${targetId}:${link.type ?? ""}:${link.key ?? ""}`;
+      })
+      .sort();
+
+    return `${nodeIds.join("|")}::${linkKeys.join("|")}`;
+  }, [graphData.links, graphData.nodes]);
 
   const maxImportChars = healthState?.maxPayloadContentChars ?? 80000;
   const importContentLength = importForm.content.length;
   const importIsTooLong = importContentLength > maxImportChars;
 
+  const fitGraphToViewport = useCallback((duration = 260) => {
+    if (!fgRef.current || !graphData.nodes.length) return;
+    const fitPadding = Math.max(84, Math.min(140, Math.round(graphSize.height * 0.24)));
+    fgRef.current.zoomToFit(duration, fitPadding);
+  }, [graphData.nodes.length, graphSize.height]);
+
+  const finalizeGraphViewport = useCallback((duration = 260) => {
+    fitGraphToViewport(duration);
+    setIsGraphViewportReady(true);
+  }, [fitGraphToViewport]);
+
   useEffect(() => {
-    if (!fgRef.current) return;
+    if (!fgRef.current || !graphData.nodes.length) {
+      pendingGraphFitRef.current = false;
+      setIsGraphViewportReady(graphData.nodes.length === 0);
+      return;
+    }
+
+    setIsGraphViewportReady(false);
     fgRef.current.d3Force("nodeCollision", createNodeCollisionForce());
     fgRef.current.d3Force("charge").strength(-220);
     fgRef.current.d3Force("link").distance(130);
+    pendingGraphFitRef.current = true;
     fgRef.current.d3ReheatSimulation();
-  }, [graphData]);
+  }, [graphTopologySignature, graphData.nodes.length, sessionId]);
 
   useEffect(() => {
-    if (!fgRef.current || !graphData.nodes.length) return;
+    if (!graphData.nodes.length) return;
 
-    const zoomTimer = window.setTimeout(() => {
-      fgRef.current?.zoomToFit(350, 70);
-    }, 180);
+    graphFitTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    graphFitTimersRef.current = [
+      window.setTimeout(() => {
+        if (!pendingGraphFitRef.current) {
+          finalizeGraphViewport(260);
+        }
+      }, 140),
+      window.setTimeout(() => {
+        if (!pendingGraphFitRef.current) {
+          finalizeGraphViewport(320);
+        }
+      }, 420)
+    ];
 
-    return () => window.clearTimeout(zoomTimer);
-  }, [graphData.nodes.length, graphSize.width, graphSize.height, leftRailMinimized, rightRailMinimized]);
+    return () => {
+      graphFitTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+      graphFitTimersRef.current = [];
+    };
+  }, [fitGraphToViewport, graphSize.width, graphSize.height, leftRailMinimized, rightRailMinimized]);
+
+  useEffect(() => {
+    if (!graphData.nodes.length) return;
+
+    const fallbackTimer = window.setTimeout(() => {
+      if (!pendingGraphFitRef.current) return;
+      pendingGraphFitRef.current = false;
+      finalizeGraphViewport(360);
+    }, 900);
+
+    return () => window.clearTimeout(fallbackTimer);
+  }, [finalizeGraphViewport, graphTopologySignature, graphData.nodes.length, sessionId]);
+
+  const handleGraphEngineStop = useCallback(() => {
+    if (!pendingGraphFitRef.current) return;
+    pendingGraphFitRef.current = false;
+    finalizeGraphViewport(320);
+  }, [finalizeGraphViewport]);
 
   const selectedNodeConnections = useMemo(() => {
     if (!selectedNode) return { upstream: [], downstream: [] };
@@ -731,6 +1077,20 @@ export default function App() {
       .filter((node) => node.id !== selectedNode.id && node.type === selectedNode.type && visibleNodeTypes.includes(node.type))
       .sort((left, right) => left.label.localeCompare(right.label));
   }, [graphState, selectedNode?.id, selectedNode?.type]);
+
+  const sessionSummaryMap = useMemo(
+    () => new Map(recentSessions.map((session) => [session.id, session])),
+    [recentSessions]
+  );
+  const openTabSessions = useMemo(
+    () => openTabs.map((entry) => sessionSummaryMap.get(entry)).filter(Boolean),
+    [openTabs, sessionSummaryMap]
+  );
+  const reopenableSessions = useMemo(
+    () => recentSessions.filter((session) => !openTabs.includes(session.id)).slice(0, 6),
+    [openTabs, recentSessions]
+  );
+  const activeWorkspaceName = sessionTargetState.workspaces?.[0]?.name ?? "Personal Learning";
 
   const handleReview = async (nodeId, action) => {
     if (!sessionId) return;
@@ -1241,9 +1601,77 @@ export default function App() {
     ctx.restore();
   };
 
+  const mapTabsChrome = (
+    <section className="map-tabs-shell panel">
+      <div className="map-tabs-header">
+        <div>
+          <p className="panel-title">Map Tabs</p>
+          <h2>{activeWorkspaceName}</h2>
+        </div>
+        <div className="map-tabs-meta">
+          <span>{sessionTargetState.activeSession ? `Extension target: ${sessionTargetState.activeSession.goal || "Untitled map"}` : "Extension target is idle"}</span>
+          <span>{openTabSessions.length} open tab{openTabSessions.length === 1 ? "" : "s"}</span>
+        </div>
+      </div>
+
+      <div className="map-tabs-row">
+        <button
+          type="button"
+          className={`map-home-tab ${!sessionId ? "is-active" : ""}`}
+          onClick={() => navigateToSession(null)}
+        >
+          All Maps
+        </button>
+
+        {openTabSessions.map((session) => (
+          <div key={session.id} className={`map-tab ${sessionId === session.id ? "is-active" : ""}`}>
+            <button type="button" className="map-tab-main" onClick={() => openSessionTab(session.id)}>
+              <strong>{session.goal || "Untitled map"}</strong>
+              <span>
+                {session.id === sessionTargetState.activeSessionId ? "capture target" : session.endedAt ? "ended" : "live"} • {session.sourceCount} sources
+              </span>
+            </button>
+            <button
+              type="button"
+              className="map-tab-close"
+              aria-label={`Close ${session.goal || "Untitled map"} tab`}
+              onClick={() => closeSessionTab(session.id)}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+
+        <form className="map-tab-create-form" onSubmit={(event) => handleCreateSession(event, { fromTabs: true })}>
+          <input
+            className="text-input map-tab-input"
+            placeholder="New map goal..."
+            value={tabComposerGoal}
+            onChange={(event) => setTabComposerGoal(event.target.value)}
+          />
+          <button className="secondary-button" type="submit" disabled={isCreatingSession}>
+            {isCreatingSession ? "Creating..." : "New Map"}
+          </button>
+        </form>
+      </div>
+
+      {reopenableSessions.length ? (
+        <div className="map-reopen-row">
+          <span>Reopen recent</span>
+          {reopenableSessions.map((session) => (
+            <button key={session.id} type="button" className="map-reopen-chip" onClick={() => openSessionTab(session.id)}>
+              {session.goal || "Untitled map"}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+
   if (!sessionId) {
     return (
       <div className="page-shell">
+        {mapTabsChrome}
         <div className="landing-shell">
           <section className="landing-hero panel">
             <p className="panel-title">MindWeaver</p>
@@ -1298,7 +1726,7 @@ export default function App() {
                   <button
                     key={session.id}
                     className="session-card"
-                    onClick={() => window.location.assign(`${window.location.pathname}?sessionId=${encodeURIComponent(session.id)}`)}
+                    onClick={() => openSessionTab(session.id)}
                   >
                     <strong>{session.goal || "Untitled learning session"}</strong>
                     <span>{session.conceptCount} concepts • {session.sourceCount} sources • {session.endedAt ? "ended" : "live"}</span>
@@ -1325,7 +1753,8 @@ export default function App() {
   ].filter(Boolean).join(" ");
 
   return (
-    <div className="page-shell">
+    <div className="page-shell is-workspace">
+      {mapTabsChrome}
       <div className={appShellClassName}>
         <aside className={`left-rail ${leftRailMinimized ? "is-minimized" : ""}`} aria-label="Map navigation">
           {leftRailMinimized ? (
@@ -1423,7 +1852,7 @@ export default function App() {
               Local storage is used for the graph. AI classification uses configured OpenAI calls, capped at {healthState?.contentLimitChars?.toLocaleString() ?? "16,000"} characters per source.
             </p>
             <div className="queue-actions">
-              <button className="small-button" onClick={() => window.location.assign(window.location.pathname)}>All Maps</button>
+              <button className="small-button" onClick={() => navigateToSession(null)}>All Maps</button>
               <button className="small-button" disabled={isExporting} onClick={() => handleExport("markdown")}>
                 {isExporting ? "Exporting..." : "Export Markdown"}
               </button>
@@ -1522,6 +1951,13 @@ export default function App() {
             </div>
           ) : null}
           <div className="graph-canvas" ref={graphContainerRef}>
+            {graphData.nodes.length > 0 && !isGraphViewportReady ? (
+              <div className="graph-loading-overlay">
+                <p className="panel-title">Preparing View</p>
+                <h3>Fitting your map to the workspace</h3>
+                <p>MindWeaver is settling the graph so it opens at a usable zoom level.</p>
+              </div>
+            ) : null}
             {!isLoadingGraph && graphData.nodes.length === 0 ? (
               <div className="graph-empty">
                 <p className="panel-title">Start Building</p>
@@ -1537,6 +1973,8 @@ export default function App() {
               graphData={graphData}
               width={graphSize.width}
               height={graphSize.height}
+              minZoom={0.08}
+              maxZoom={6}
               backgroundColor="rgba(0,0,0,0)"
               nodeCanvasObject={handleNodeRender}
               nodePointerAreaPaint={handlePointerPaint}
@@ -1548,10 +1986,10 @@ export default function App() {
                 openRightPanel("inspector");
               }}
               nodeRelSize={4}
-              warmupTicks={120}
-              cooldownTicks={90}
+              warmupTicks={90}
+              cooldownTicks={60}
               d3VelocityDecay={0.28}
-              onEngineStop={() => fgRef.current?.zoomToFit(450, 60)}
+              onEngineStop={handleGraphEngineStop}
             />
           </div>
         </main>

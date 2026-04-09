@@ -15,7 +15,11 @@ export function createDefaultData() {
     artifacts: [],
     users: [],
     workspaces: [],
-    reports: []
+    reports: [],
+    preferences: {
+      activeSessionId: null,
+      lastSessionId: null
+    }
   };
 }
 
@@ -37,5 +41,9 @@ export async function initDb(targetDb = db) {
   targetDb.data.users ||= [];
   targetDb.data.workspaces ||= [];
   targetDb.data.reports ||= [];
+  targetDb.data.preferences ||= {
+    activeSessionId: null,
+    lastSessionId: null
+  };
   await targetDb.write();
 }

@@ -5,10 +5,11 @@ The Chrome extension is the on-demand capture surface for MindWeaver. It saves t
 ## Behavior
 
 - `Save Current Page` extracts the active tab and sends it to the local MindWeaver server.
-- If no map is active, the popup creates a session first using the optional goal field.
+- The popup shows recent destination maps and lets you switch the shared active map used by both the Web UI and the extension.
+- If no map is active, the popup can create one first using the optional goal field.
 - `Save selection to MindWeaver` in the right-click menu saves highlighted text as evidence.
-- `Open MindWeaver` opens the current map in the web UI.
-- `End Current Map` closes the current session for future saves while preserving the saved graph.
+- `Open MindWeaver` opens the active map in the web UI, or the last-used map if capture is currently idle.
+- `End Active Map` ends the shared active map for future saves while preserving the saved graph.
 
 ## Privacy Model
 
@@ -39,8 +40,8 @@ The extractor skips:
 
 - [`manifest.json`](manifest.json): Chrome extension permissions, popup, and background worker config.
 - [`popup.html`](popup.html): popup UI.
-- [`popup.js`](popup.js): session creation, save-page button, and open-app behavior.
-- [`background.js`](background.js): active-tab extraction, context menu handling, and local API calls.
+- [`popup.js`](popup.js): shared target-map selection, map creation, save-page button, and open-app behavior.
+- [`background.js`](background.js): active-tab extraction, context menu handling, and shared target-map API calls.
 - [`content.js`](content.js): readable-text extraction logic injected on demand.
 
 ## Local Requirements

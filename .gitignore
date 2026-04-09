@@ -41,6 +41,12 @@ playwright-report/
 test-results/
 *.lcov
 
+# Playwright and browser automation artifacts
+.playwright-cli/
+**/.playwright-cli/
+output/playwright/
+*.codex-*.png
+
 # Local secrets
 .env
 .env.*

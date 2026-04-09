@@ -400,7 +400,11 @@ function sanitizeDataShape(data) {
     artifacts: Array.isArray(data?.artifacts) ? data.artifacts : [],
     users: Array.isArray(data?.users) ? data.users : [],
     workspaces: Array.isArray(data?.workspaces) ? data.workspaces : [],
-    reports: Array.isArray(data?.reports) ? data.reports : []
+    reports: Array.isArray(data?.reports) ? data.reports : [],
+    preferences: {
+      ...defaults.preferences,
+      ...(data?.preferences ?? {})
+    }
   };
 }
 
@@ -833,12 +837,99 @@ function buildSessionSummary(db, session) {
     goal: session.goal,
     startedAt: session.startedAt,
     endedAt: session.endedAt,
+    workspaceId: session.workspaceId ?? null,
+    ownerId: session.ownerId ?? null,
     nodeCount: nodes.length,
     conceptCount: concepts.length,
     reviewedConceptCount: reviewedConcepts.length,
     sourceCount: artifacts.length,
     latestGapAnalysisAt: session.latestGapAnalysis?.runAt ?? null
   };
+}
+
+function getUserPreferences(db) {
+  db.data.preferences ||= {
+    activeSessionId: null,
+    lastSessionId: null
+  };
+  db.data.preferences.activeSessionId = String(db.data.preferences.activeSessionId ?? "").trim() || null;
+  db.data.preferences.lastSessionId = String(db.data.preferences.lastSessionId ?? "").trim() || null;
+  return db.data.preferences;
+}
+
+function repairSessionSelection(db) {
+  const preferences = getUserPreferences(db);
+  const sessionsByStartedAt = [...db.data.sessions].sort((left, right) => (right.startedAt ?? 0) - (left.startedAt ?? 0));
+  const sessionIds = new Set(sessionsByStartedAt.map((session) => session.id));
+
+  if (preferences.activeSessionId && !sessionIds.has(preferences.activeSessionId)) {
+    preferences.activeSessionId = null;
+  }
+
+  if (preferences.lastSessionId && !sessionIds.has(preferences.lastSessionId)) {
+    preferences.lastSessionId = sessionsByStartedAt[0]?.id ?? null;
+  }
+
+  return preferences;
+}
+
+function selectActiveSession(db, sessionId) {
+  const preferences = repairSessionSelection(db);
+  const nextSessionId = String(sessionId ?? "").trim() || null;
+  preferences.activeSessionId = nextSessionId;
+  if (nextSessionId) {
+    preferences.lastSessionId = nextSessionId;
+  }
+  return preferences;
+}
+
+function clearActiveSession(db, sessionId = null) {
+  const preferences = repairSessionSelection(db);
+  const nextSessionId = String(sessionId ?? "").trim() || null;
+
+  if (!nextSessionId || preferences.activeSessionId === nextSessionId) {
+    preferences.activeSessionId = null;
+  }
+
+  if (nextSessionId) {
+    preferences.lastSessionId = nextSessionId;
+  }
+
+  return preferences;
+}
+
+function buildSessionTargetPayload(db, limit = 24) {
+  const safeLimit = Math.max(1, Math.min(60, Number(limit ?? 24)));
+  const preferences = repairSessionSelection(db);
+  const workspace = getDefaultWorkspace(db);
+  const sessions = [...db.data.sessions]
+    .sort((left, right) => (right.startedAt ?? 0) - (left.startedAt ?? 0))
+    .slice(0, safeLimit)
+    .map((session) => ({
+      ...buildSessionSummary(db, session),
+      isActiveTarget: session.id === preferences.activeSessionId
+    }));
+
+  const activeRecord = preferences.activeSessionId ? getSession(db, preferences.activeSessionId) : null;
+  const lastRecord = preferences.lastSessionId ? getSession(db, preferences.lastSessionId) : null;
+  const activeSession = activeRecord ? buildSessionSummary(db, activeRecord) : null;
+  const lastSession = lastRecord ? buildSessionSummary(db, lastRecord) : null;
+
+  return {
+    activeSessionId: preferences.activeSessionId,
+    lastSessionId: preferences.lastSessionId,
+    activeSession,
+    lastSession,
+    sessions,
+    workspaces: [workspace]
+  };
+}
+
+function isAllowedCorsOrigin(origin) {
+  if (!origin) return true;
+  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return true;
+  if (/^(chrome-extension|moz-extension):\/\//i.test(origin)) return true;
+  return false;
 }
 
 function getDefaultWorkspace(db) {
@@ -1423,8 +1514,7 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
   });
   app.use(cors({
     origin(origin, callback) {
-      if (!origin || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return callback(null, true);
-      return callback(new Error("CORS origin not allowed"));
+      return callback(null, isAllowedCorsOrigin(origin));
     }
   }));
   app.use(express.json({ limit: "2mb" }));
@@ -1486,6 +1576,7 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
     if (!backup?.data || backup.app !== "MindWeaver") return res.status(400).json({ error: "valid MindWeaver backup required" });
 
     db.data = sanitizeDataShape(backup.data);
+    repairSessionSelection(db);
     await db.write();
     res.json({
       ok: true,
@@ -1505,6 +1596,27 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
       .map((session) => buildSessionSummary(db, session));
 
     res.json({ sessions });
+  });
+
+  app.get("/api/session-target", async (req, res) => {
+    const payload = buildSessionTargetPayload(db, req.query.limit ?? 24);
+    await db.write();
+    res.json(payload);
+  });
+
+  app.put("/api/session-target", async (req, res) => {
+    const sessionId = req.body?.sessionId === null ? null : String(req.body?.sessionId ?? "").trim();
+
+    if (sessionId) {
+      const session = getSession(db, sessionId);
+      if (!session) return res.status(404).json({ error: "session not found" });
+      selectActiveSession(db, sessionId);
+    } else {
+      clearActiveSession(db);
+    }
+
+    await db.write();
+    res.json(buildSessionTargetPayload(db, req.body?.limit ?? 24));
   });
 
   app.post("/api/sessions", async (req, res) => {
@@ -1529,6 +1641,7 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
     });
 
     const goal = createGoalForSession(db, session.id, goalTitle);
+    selectActiveSession(db, session.id);
 
     await db.write();
     res.json({
@@ -1540,6 +1653,7 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
   app.post("/api/demo-session", async (req, res) => {
     const session = createDemoSession(db);
     ensureSessionWorkspace(db, session);
+    selectActiveSession(db, session.id);
     await db.write();
     res.json({
       ...session,
@@ -1575,6 +1689,7 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
     if (!session) return res.status(404).json({ error: "session not found" });
 
     session.endedAt = Date.now();
+    clearActiveSession(db, session.id);
     await db.write();
     res.json(session);
   });
@@ -1583,6 +1698,7 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
     const removed = deleteSessionData(db, req.params.id);
     if (!removed) return res.status(404).json({ error: "session not found" });
 
+    repairSessionSelection(db);
     await db.write();
     res.json({ ok: true });
   });
