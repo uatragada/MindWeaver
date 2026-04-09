@@ -1,14 +1,4 @@
-# MindWeaver
-
-Source-grounded knowledge maps for personal learning.
-
-MindWeaver helps you turn pages, notes, transcripts, docs, and highlights into a graph you can inspect, clean up, quiz against, and export. It is designed for people who want a map of what they are actually learning, not just another pile of saved links.
-
-> Open-source alpha. Local-first. Single-user. Best experienced on your own machine.
-
-<p align="center">
-  <img src="docs/screenshots/mindweaver-home.png" alt="MindWeaver home screen" width="1100" />
-</p>
+<img width="1440" height="1502" alt="image" src="https://github.com/user-attachments/assets/0e08e6cc-81e6-49ac-9f4d-78455edfc289" />
 
 ## What It Does
 
