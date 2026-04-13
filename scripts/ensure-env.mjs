@@ -35,7 +35,7 @@ if (existsSync(envExamplePath)) {
   console.log("Created server/.env.local from server/.env.example");
 } else {
   writeFileSync(envLocalPath, `${blankKeyEntry}\n`, "utf8");
-  console.log("Created server/.env.local with a blank OpenAI API key entry");
+  console.log("Created server/.env.local with a blank AI configuration template");
 }
 
-console.log("Add your OpenAI API key to server/.env.local to enable AI-powered features.");
+console.log("Add your OpenAI API key to server/.env.local, or run Ollama locally, to enable AI-powered features.");

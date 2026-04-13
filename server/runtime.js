@@ -5,6 +5,7 @@ import { config } from "dotenv";
 import OpenAI from "openai";
 import { createDb, initDb } from "./db.js";
 import { createApp } from "./app.js";
+import { DEFAULT_OLLAMA_BASE_URL } from "./openai.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultStaticDir = resolve(__dirname, "../web/dist");
@@ -32,8 +33,9 @@ export async function startMindWeaverServer({
   const openaiClient = process.env.OPENAI_API_KEY
     ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
     : null;
+  const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? DEFAULT_OLLAMA_BASE_URL;
 
-  const app = createApp({ db, openaiClient, staticDir });
+  const app = createApp({ db, openaiClient, ollamaBaseUrl, staticDir });
   const server = await new Promise((resolveServer, rejectServer) => {
     const listener = app.listen(resolvedPort, resolvedHost, () => resolveServer(listener));
     listener.on("error", rejectServer);

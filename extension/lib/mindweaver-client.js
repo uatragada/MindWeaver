@@ -46,9 +46,13 @@ function buildWebAppCandidates(apiBase, path = "") {
     : "/";
   const parsed = new URL(apiBase);
   return dedupeBases([
-    `http://${parsed.hostname}:5197${normalizedPath}`,
-    `${parsed.origin}${normalizedPath}`
+    `${parsed.origin}${normalizedPath}`,
+    `http://${parsed.hostname}:5197${normalizedPath}`
   ]);
+}
+
+function isHtmlLikeContentType(contentType) {
+  return !contentType || /text\/html|application\/xhtml\+xml/i.test(String(contentType));
 }
 
 function createMindWeaverClient({
@@ -108,9 +112,29 @@ function createMindWeaverClient({
     return base;
   }
 
+  async function canOpenWebUrl(url) {
+    try {
+      const response = await fetchImpl(url, { method: "GET", cache: "no-store" });
+      if (!response?.ok) return false;
+
+      const headerContentType = typeof response.headers?.get === "function"
+        ? response.headers.get("content-type")
+        : response.headers?.["content-type"];
+      return isHtmlLikeContentType(headerContentType);
+    } catch {
+      return false;
+    }
+  }
+
   async function pickWebUrl(path = "") {
     const apiBase = await getPreferredBase().catch(() => defaultApiBases[0]);
-    return buildWebAppCandidates(apiBase, path)[0];
+    const candidates = buildWebAppCandidates(apiBase, path);
+
+    for (const candidate of candidates) {
+      if (await canOpenWebUrl(candidate)) return candidate;
+    }
+
+    return candidates[candidates.length - 1] ?? buildWebAppCandidates(defaultApiBases[0], path)[0];
   }
 
   return {

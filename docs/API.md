@@ -8,7 +8,7 @@ All request and response bodies are JSON unless noted otherwise.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/health` | Returns server health, OpenAI configuration status, and content limits. |
+| `GET` | `/api/health` | Returns server health, provider availability, selected AI settings, and content limits. |
 | `GET` | `/api/workspaces` | Returns local workspace records. |
 | `POST` | `/api/workspaces` | Creates a local workspace placeholder. |
 
@@ -38,6 +38,7 @@ Restore body:
 | --- | --- | --- |
 | `GET` | `/api/sessions?limit=8` | Lists recent maps with summary counts. |
 | `GET` | `/api/session-target` | Returns the shared active-map state used by the web UI and extension. |
+| `PUT` | `/api/session-target` | Updates the shared active map and the tab-backed map list used by both the web UI and extension. |
 | `POST` | `/api/sessions` | Creates a new learning map and optional legacy goal node. |
 | `POST` | `/api/demo-session` | Creates a prebuilt demo map. |
 | `PATCH` | `/api/sessions/:id` | Renames an existing map. |
@@ -56,11 +57,13 @@ Create session body:
 
 `goal` is still the field name in the data model, but in the current product this value is primarily treated as the map name.
 
+`GET /api/session-target` and `PUT /api/session-target` return the shared capture target plus `tabSessions`, which is the server-backed list used to keep the extension destination menu aligned with the web app's map tabs.
+
 ## Sources And Imports
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/ingest` | Ingests a saved web page from the extension. |
+| `POST` | `/api/ingest` | Ingests a saved web page from the extension through the FIFO page-save queue. |
 | `POST` | `/api/import` | Imports manual notes, PDF text, transcripts, Markdown, bookmarks, docs/repo excerpts, or highlights. |
 | `GET` | `/api/import-chat-history/template?provider=chatgpt&sessionId=...` | Returns a copy-paste prompt template for ChatGPT or Claude. |
 | `POST` | `/api/import-chat-history` | Imports structured JSON generated from external chat history. |
@@ -93,14 +96,14 @@ Single import body:
 }
 ```
 
-The server accepts source content up to 80,000 characters. OpenAI classification reads up to 16,000 characters per source.
+The server accepts source content up to 80,000 characters when using OpenAI and up to 128,000 characters when using a local Ollama model. OpenAI classification reads up to 16,000 characters per source, while local models can read up to 128,000 characters per source. Page saves are processed one at a time, and exact duplicate labels are collapsed automatically after ingest/import updates.
 
 Chat-history import body:
 
 ```json
 {
   "sessionId": "session-id",
-  "payload": {
+  "importData": {
     "schema_version": "mindweaver.chat_import.v1",
     "provider": "chatgpt",
     "title": "System design history",
@@ -135,6 +138,8 @@ Chat-history import body:
 | `POST` | `/api/edges/:key/review` | Approves or rejects a graph edge for a session. |
 | `POST` | `/api/prune` | Finds or removes low-confidence concepts with no direct evidence. |
 | `POST` | `/api/nodes` | Creates a manual node, including top-level goal nodes when needed. |
+
+MindWeaver also runs conservative exact-label dedupe after `POST /api/ingest`, `POST /api/import`, `POST /api/nodes`, `PATCH /api/nodes/:id`, and `POST /api/refine`, so repeated saves or label edits collapse back onto one visible canonical node.
 
 Node review body:
 
@@ -219,6 +224,6 @@ Chat body:
 }
 ```
 
-## OpenAI Dependency
+## AI Provider Notes
 
-OpenAI-backed endpoints use the server-side `OPENAI_API_KEY` from `server/.env.local`. Some routes provide fallback behavior when OpenAI is not configured, but classification, quiz generation, gap analysis, chat enrichment, and explanations are most useful with an API key.
+MindWeaver can run AI-backed endpoints with either OpenAI or a local Ollama model. OpenAI-backed routes use the server-side `OPENAI_API_KEY` from `server/.env.local`, while local mode uses the selected Ollama model reported by `GET /api/health`. Classification, quiz generation, gap analysis, chat enrichment, and explanations are most useful when at least one provider is configured.

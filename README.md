@@ -4,6 +4,7 @@
 
 - Capture source material from the Chrome extension or paste it directly into the app.
 - Organize learning into named maps, domains, skills, concepts, and relationships.
+- Run AI-backed classification and cleanup with OpenAI or a local Ollama model.
 - Keep provenance visible so every concept can be traced back to source material.
 - Review noisy AI output instead of trusting it blindly.
 - Run gap analysis, study plans, quiz loops, and source-grounded graph chat.
@@ -41,7 +42,9 @@ If you want AI-powered classification, chat, quizzes, and richer gap analysis, s
 OPENAI_API_KEY=your_key_here
 ```
 
-MindWeaver still runs without an OpenAI key, but some features fall back to simpler local behavior.
+If you prefer local AI, install Ollama and pull a model such as `qwen3.5:4b`, then choose `Local (Ollama)` inside MindWeaver. Local mode keeps AI requests on-device and raises source/page limits to 128,000 characters per save or import.
+
+MindWeaver still runs without an OpenAI key, but some features fall back to simpler local behavior unless you select a local Ollama model.
 
 ### 3. Start the app
 
@@ -149,6 +152,7 @@ Use it to:
 
 - search nodes
 - filter by type
+- refresh the canvas manually after extension saves or other external updates
 - inspect one concept at a time
 - merge duplicates
 - approve or reject weak nodes
@@ -212,21 +216,28 @@ Load the extension from [`extension/`](extension/README.md):
 4. Select the [`extension`](extension) folder
 5. Make sure the MindWeaver server is running locally
 6. Click the extension icon
-7. Save the current page or save selected text
+7. Save the current page, save selected text, or turn on `Continuous Save`
 
-The extension is explicit and on-demand:
+The extension is explicit by default and can switch into a user-enabled continuous-save mode:
 
-- it does not continuously track browsing
-- it injects extraction only after you click save
+- it injects extraction only after you click save or turn on `Continuous Save`
+- it can automatically save newly visited pages only while that toggle is on
 - it sends data only to your local MindWeaver server
+
+The popup destination list mirrors the currently open map tabs in the web UI, page saves are processed in order if another save is already running, and `Continuous Save` follows the currently active destination map. If the graph is already open, use the in-canvas `Refresh map` button after external saves because the workspace no longer auto-polls.
 
 ## What Works Today
 
 - local session creation
 - demo maps for quick exploration
 - graph browsing and node inspection
+- color-coded graph hierarchy with manual refresh and improved spacing
 - manual imports and bulk Markdown import
+- local Ollama mode with higher 128k source limits
 - source-backed node editing and review
+- automatic exact-label dedupe after imports, edits, and refine
+- shared extension and web-app map targeting
+- queued page saves from the extension
 - duplicate merging and edge review
 - local backup and restore
 - Markdown and JSON export
@@ -250,6 +261,7 @@ MindWeaver is local-first.
 - local runtime data lives in `server/data.json`
 - `.env.local` files and local data are git-ignored
 - OpenAI requests are made from the local server, not the extension UI
+- Local (Ollama) requests also flow through the local server and stay on-device
 - bounded slices of imported content are sent for AI-backed features when OpenAI is configured
 
 Do not import data you are not comfortable sending to the configured OpenAI account.

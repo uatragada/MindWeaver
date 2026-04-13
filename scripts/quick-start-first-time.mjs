@@ -94,11 +94,11 @@ async function runSetup() {
 async function promptForOpenAiKey(rl, existingKey) {
   console.log("");
   console.log(`MindWeaver stores the API key in ${envLocalPath}.`);
-  console.log("Enter your OpenAI API key to enable AI-powered features, or leave it blank to skip for now.");
+  console.log("Enter your OpenAI API key to enable cloud AI features, or leave it blank if you plan to use Local (Ollama).");
 
   const prompt = existingKey
-    ? "OpenAI API key [press Enter to keep the current value, type SKIP to clear it]: "
-    : "OpenAI API key [press Enter to skip for now]: ";
+    ? "OpenAI API key [press Enter to keep the current value, type SKIP to clear it and use Local/Ollama instead]: "
+    : "OpenAI API key [press Enter to skip for now and use Local/Ollama instead]: ";
   const response = (await rl.question(prompt)).trim();
 
   if (!response) {

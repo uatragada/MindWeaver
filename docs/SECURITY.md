@@ -27,10 +27,12 @@ If a real API key is ever committed, rotate it immediately. Removing it from a l
 Runtime data lives in `server/data.json`. It can include:
 
 - map names and optional goal nodes,
+- shared active-map state and open map tabs,
 - saved page URLs and titles,
 - imported note/transcript/PDF text excerpts,
 - concept labels and summaries,
 - review history,
+- selected AI provider/model settings,
 - local reports,
 - backups or exportable graph evidence.
 
@@ -38,12 +40,12 @@ Runtime data lives in `server/data.json`. It can include:
 
 ## Extension Privacy Model
 
-The Chrome extension is explicit and on-demand.
+The Chrome extension is manual by default and can be switched into a user-enabled continuous-save mode.
 
-- It does not continuously track browsing.
 - It does not register a content script across all URLs.
-- It injects `content.js` only after `Save Current Page`.
+- It injects `content.js` only after `Save Current Page` or while the user-enabled `Continuous Save` toggle is observing newly visited pages.
 - It saves selected text only after the user chooses the context-menu action.
+- It can automatically save newly visited pages only while `Continuous Save` is enabled.
 - It sends data only to `http://localhost:3001`.
 
 The extractor skips:
@@ -58,15 +60,16 @@ This skip logic is a guardrail, not a guarantee. Users should still avoid saving
 
 ## AI Boundary
 
-OpenAI calls are made from the local server, not from the browser extension or web client. The server sends bounded slices of source content to OpenAI for classification and learning features.
+AI calls are made from the local server, not from the browser extension or web client. OpenAI requests leave the machine only when OpenAI is the selected provider. Local/Ollama requests stay on-device, and structured local JSON is schema-validated on the server before it is used to mutate the graph.
 
 Current limits:
 
-- extension page text extraction: up to 16,000 characters,
+- extension page text extraction: up to the selected provider's source limit (16,000 characters for OpenAI, 128,000 for Local/Ollama),
 - OpenAI classification/refinement slice: up to 16,000 characters,
-- local import payload validation: up to 80,000 characters.
+- Local/Ollama classification/refinement slice: up to 128,000 characters,
+- local import payload validation: up to 80,000 characters for OpenAI and 128,000 for Local/Ollama.
 
-Do not import data you are not comfortable sending to the configured OpenAI account.
+Do not import data you are not comfortable sending to the configured OpenAI account when OpenAI is selected.
 
 ## Backup And Restore
 

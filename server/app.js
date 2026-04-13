@@ -5,12 +5,23 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createDefaultData } from "./db.js";
-import { requestStructuredJson, requestText } from "./openai.js";
+import {
+  DEFAULT_LOCAL_MODEL,
+  DEFAULT_OPENAI_MODEL,
+  getOllamaStatus,
+  requestStructuredJson,
+  requestText,
+  normalizeLlmSelection
+} from "./openai.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LOW_CONFIDENCE_THRESHOLD = 0.85;
 const OPENAI_CONTENT_LIMIT = 16000;
-const MAX_INGEST_CONTENT_CHARS = 80000;
+const LOCAL_MODEL_CONTENT_LIMIT = 128000;
+const OPENAI_MAX_INGEST_CONTENT_CHARS = 80000;
+const LOCAL_MAX_INGEST_CONTENT_CHARS = 128000;
+const LOCAL_STRUCTURED_INGEST_RETRY_CHARS = 7000;
+const LOCAL_STRUCTURED_INGEST_FOCUSED_CHARS = 1200;
 const REVIEW_INTERVALS_DAYS = [1, 3, 7, 14, 30];
 const SOURCE_TYPE_LABELS = {
   page: "Web Page",
@@ -39,6 +50,160 @@ const CHAT_IMPORT_NODE_TYPE_PRIORITY = {
   domain: 3
 };
 const USER_CREATABLE_NODE_TYPES = new Set(["goal", "domain", "skill", "concept"]);
+const STRUCTURED_NODE_TYPES = ["goal", "domain", "skill", "concept"];
+const STRUCTURED_RELATIONSHIP_TYPES = ["contains", "builds_on", "prerequisite", "related", "contrasts", "supports", "needs", "focuses_on"];
+const NON_EMPTY_STRING_SCHEMA = { type: "string", minLength: 1 };
+const LOCAL_REFINE_MISSING_EVIDENCE_GROUP_SIZE = 4;
+const LOCAL_REFINE_SNAPSHOT_NODE_LIMIT = 7;
+const LOCAL_REFINE_ARTIFACT_LIMIT = 2;
+
+function getLlmContentLimit(rawSelection = {}) {
+  const selection = normalizeLlmSelection(rawSelection);
+  return selection.provider === "local" ? LOCAL_MODEL_CONTENT_LIMIT : OPENAI_CONTENT_LIMIT;
+}
+
+function getMaxIngestContentChars(rawSelection = {}) {
+  const selection = normalizeLlmSelection(rawSelection);
+  return selection.provider === "local" ? LOCAL_MAX_INGEST_CONTENT_CHARS : OPENAI_MAX_INGEST_CONTENT_CHARS;
+}
+
+function buildLocalStructuredIngestExcerpt(content, maxChars = LOCAL_STRUCTURED_INGEST_RETRY_CHARS) {
+  const safeContent = String(content ?? "").trim();
+  const safeLimit = Math.max(500, Math.floor(Number(maxChars) || LOCAL_STRUCTURED_INGEST_RETRY_CHARS));
+  if (!safeContent || safeContent.length <= safeLimit) return safeContent;
+
+  const windowSize = Math.max(400, Math.floor((safeLimit - 8) / 3));
+  const middleStart = Math.max(0, Math.floor((safeContent.length - windowSize) / 2));
+  const endStart = Math.max(0, safeContent.length - windowSize);
+
+  return [
+    safeContent.slice(0, windowSize),
+    safeContent.slice(middleStart, middleStart + windowSize),
+    safeContent.slice(endStart)
+  ]
+    .join("\n\n...")
+    .slice(0, safeLimit);
+}
+
+function buildLocalFocusedIngestExcerpt(content, maxChars = LOCAL_STRUCTURED_INGEST_FOCUSED_CHARS) {
+  const safeContent = String(content ?? "").trim();
+  const safeLimit = Math.max(280, Math.floor(Number(maxChars) || LOCAL_STRUCTURED_INGEST_FOCUSED_CHARS));
+  if (!safeContent || safeContent.length <= safeLimit) return safeContent;
+  return safeContent.slice(0, safeLimit).trim();
+}
+
+function buildStrictObjectSchema(properties, required = Object.keys(properties)) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties,
+    required
+  };
+}
+
+function buildStringArraySchema({ minItems = 0, maxItems = null } = {}) {
+  const schema = {
+    type: "array",
+    items: { type: "string" },
+    uniqueItems: true
+  };
+
+  if (Number.isFinite(minItems) && minItems > 0) {
+    schema.minItems = minItems;
+  }
+
+  if (Number.isFinite(maxItems)) {
+    schema.maxItems = maxItems;
+  }
+
+  return schema;
+}
+
+function createSequentialTaskQueue() {
+  let tail = Promise.resolve();
+
+  return async function enqueue(work) {
+    const nextRun = tail.catch(() => undefined).then(() => work());
+    tail = nextRun.catch(() => undefined);
+    return nextRun;
+  };
+}
+
+const STRUCTURED_RESPONSE_SCHEMAS = {
+  graphRefinement: buildStrictObjectSchema({
+    summary: NON_EMPTY_STRING_SCHEMA,
+    rename_nodes: {
+      type: "array",
+      items: buildStrictObjectSchema({
+        id: NON_EMPTY_STRING_SCHEMA,
+        label: NON_EMPTY_STRING_SCHEMA,
+        description: { type: "string" },
+        type: { type: "string", enum: STRUCTURED_NODE_TYPES }
+      }, ["id", "label", "type"])
+    },
+    merge_nodes: {
+      type: "array",
+      items: buildStrictObjectSchema({
+        sourceId: NON_EMPTY_STRING_SCHEMA,
+        targetId: NON_EMPTY_STRING_SCHEMA,
+        reason: NON_EMPTY_STRING_SCHEMA
+      })
+    },
+    add_edges: {
+      type: "array",
+      items: buildStrictObjectSchema({
+        sourceId: NON_EMPTY_STRING_SCHEMA,
+        targetId: NON_EMPTY_STRING_SCHEMA,
+        type: { type: "string", enum: STRUCTURED_RELATIONSHIP_TYPES },
+        label: NON_EMPTY_STRING_SCHEMA
+      })
+    },
+    remove_edges: {
+      type: "array",
+      items: buildStrictObjectSchema({
+        key: NON_EMPTY_STRING_SCHEMA,
+        reason: NON_EMPTY_STRING_SCHEMA
+      })
+    }
+  }),
+  sourceWorthiness: buildStrictObjectSchema({
+    should_ingest: { type: "boolean" },
+    reason: NON_EMPTY_STRING_SCHEMA
+  }),
+  sourceClassification: buildStrictObjectSchema({
+    domain: NON_EMPTY_STRING_SCHEMA,
+    skill: NON_EMPTY_STRING_SCHEMA,
+    concepts: buildStringArraySchema({ minItems: 1, maxItems: 8 })
+  }),
+  directConceptRefinement: buildStrictObjectSchema({
+    directly_covered: buildStringArraySchema({ maxItems: 8 })
+  }),
+  gapAnalysis: buildStrictObjectSchema({
+    gaps: buildStringArraySchema({ maxItems: 8 }),
+    pathway: buildStringArraySchema({ maxItems: 8 }),
+    difficulty: { type: "string", enum: ["easy", "medium", "hard"] }
+  }),
+  quizGeneration: buildStrictObjectSchema({
+    questions: {
+      type: "array",
+      items: buildStrictObjectSchema({
+        concept: NON_EMPTY_STRING_SCHEMA,
+        q: NON_EMPTY_STRING_SCHEMA,
+        options: {
+          type: "array",
+          items: { type: "string", minLength: 1 },
+          minItems: 4,
+          maxItems: 4
+        },
+        correct: { type: "integer", minimum: 0, maximum: 3 }
+      })
+    }
+  }),
+  intersectionDiscovery: buildStrictObjectSchema({
+    bridge_concepts: buildStringArraySchema({ maxItems: 8 }),
+    reasoning: NON_EMPTY_STRING_SCHEMA
+  })
+};
 
 function hasSessionMembership(record, sessionId) {
   return Array.isArray(record?.sessionIds) && record.sessionIds.includes(sessionId);
@@ -1129,20 +1294,105 @@ function buildSessionSummary(db, session) {
   };
 }
 
+function normalizeSessionIdList(values, validSessionIds = null, limit = 24) {
+  const seen = new Set();
+  const normalized = [];
+
+  for (const rawValue of Array.isArray(values) ? values : []) {
+    const sessionId = String(rawValue ?? "").trim();
+    if (!sessionId || seen.has(sessionId)) continue;
+    if (validSessionIds && !validSessionIds.has(sessionId)) continue;
+    seen.add(sessionId);
+    normalized.push(sessionId);
+  }
+
+  if (normalized.length <= limit) return normalized;
+  return normalized.slice(normalized.length - limit);
+}
+
 function getUserPreferences(db) {
   db.data.preferences ||= {
     activeSessionId: null,
-    lastSessionId: null
+    lastSessionId: null,
+    llmProvider: "openai",
+    localLlmModel: DEFAULT_LOCAL_MODEL,
+    openSessionIds: []
   };
+
+  const hadStoredOpenSessionIds = Array.isArray(db.data.preferences.openSessionIds);
+  const sessionIdsByRecency = [...db.data.sessions]
+    .sort((left, right) => (right.startedAt ?? 0) - (left.startedAt ?? 0))
+    .map((session) => session.id);
+
   db.data.preferences.activeSessionId = String(db.data.preferences.activeSessionId ?? "").trim() || null;
   db.data.preferences.lastSessionId = String(db.data.preferences.lastSessionId ?? "").trim() || null;
+  db.data.preferences.llmProvider = String(db.data.preferences.llmProvider ?? "").trim().toLowerCase() === "local" ? "local" : "openai";
+  db.data.preferences.localLlmModel = String(db.data.preferences.localLlmModel ?? "").trim() || DEFAULT_LOCAL_MODEL;
+  db.data.preferences.openSessionIds = normalizeSessionIdList(
+    hadStoredOpenSessionIds ? db.data.preferences.openSessionIds : sessionIdsByRecency,
+    new Set(sessionIdsByRecency)
+  );
   return db.data.preferences;
+}
+
+function getStoredLlmSettings(db) {
+  const preferences = getUserPreferences(db);
+  return {
+    provider: preferences.llmProvider,
+    localModel: preferences.localLlmModel
+  };
+}
+
+function setStoredLlmSettings(db, rawSelection) {
+  const selection = normalizeLlmSelection(rawSelection);
+  const preferences = getUserPreferences(db);
+  preferences.llmProvider = selection.provider;
+  preferences.localLlmModel = selection.provider === "local"
+    ? selection.model
+    : preferences.localLlmModel || DEFAULT_LOCAL_MODEL;
+  return getStoredLlmSettings(db);
+}
+
+function resolveRequestLlmSelection(db, rawSelection) {
+  if (rawSelection && typeof rawSelection === "object") {
+    return normalizeLlmSelection(rawSelection);
+  }
+
+  const storedSettings = getStoredLlmSettings(db);
+  return normalizeLlmSelection({
+    provider: storedSettings.provider,
+    model: storedSettings.localModel
+  });
+}
+
+function buildStoredLocalModelHealthEntry(modelName) {
+  const normalizedModel = String(modelName ?? "").trim();
+  if (!normalizedModel) return null;
+
+  return {
+    value: normalizedModel,
+    label: normalizedModel === DEFAULT_LOCAL_MODEL ? "Qwen3.5 4B" : normalizedModel,
+    installed: false
+  };
+}
+
+function mergeSelectedLocalModelHealth(models, selectedModel) {
+  const availableModels = Array.isArray(models)
+    ? models.filter((model) => String(model?.value ?? "").trim())
+    : [];
+  const selectedEntry = buildStoredLocalModelHealthEntry(selectedModel);
+
+  if (!selectedEntry) return availableModels;
+  if (availableModels.some((model) => model.value === selectedEntry.value)) return availableModels;
+  return [selectedEntry, ...availableModels];
 }
 
 function repairSessionSelection(db) {
   const preferences = getUserPreferences(db);
   const sessionsByStartedAt = [...db.data.sessions].sort((left, right) => (right.startedAt ?? 0) - (left.startedAt ?? 0));
   const sessionIds = new Set(sessionsByStartedAt.map((session) => session.id));
+
+  preferences.openSessionIds = normalizeSessionIdList(preferences.openSessionIds, sessionIds);
 
   if (preferences.activeSessionId && !sessionIds.has(preferences.activeSessionId)) {
     preferences.activeSessionId = null;
@@ -1161,6 +1411,10 @@ function selectActiveSession(db, sessionId) {
   preferences.activeSessionId = nextSessionId;
   if (nextSessionId) {
     preferences.lastSessionId = nextSessionId;
+    preferences.openSessionIds = normalizeSessionIdList([
+      ...preferences.openSessionIds.filter((entry) => entry !== nextSessionId),
+      nextSessionId
+    ], new Set(db.data.sessions.map((session) => session.id)));
   }
   return preferences;
 }
@@ -1191,6 +1445,14 @@ function buildSessionTargetPayload(db, limit = 24) {
       ...buildSessionSummary(db, session),
       isActiveTarget: session.id === preferences.activeSessionId
     }));
+  const tabSessions = preferences.openSessionIds
+    .map((sessionId) => getSession(db, sessionId))
+    .filter(Boolean)
+    .slice(0, safeLimit)
+    .map((session) => ({
+      ...buildSessionSummary(db, session),
+      isActiveTarget: session.id === preferences.activeSessionId
+    }));
 
   const activeRecord = preferences.activeSessionId ? getSession(db, preferences.activeSessionId) : null;
   const lastRecord = preferences.lastSessionId ? getSession(db, preferences.lastSessionId) : null;
@@ -1203,6 +1465,7 @@ function buildSessionTargetPayload(db, limit = 24) {
     activeSession,
     lastSession,
     sessions,
+    tabSessions,
     workspaces: [workspace]
   };
 }
@@ -1280,16 +1543,55 @@ function buildProgressReport(db, sessionId) {
   };
 }
 
+const SEARCH_STOP_WORDS = new Set([
+  "a",
+  "about",
+  "an",
+  "and",
+  "are",
+  "be",
+  "does",
+  "for",
+  "from",
+  "how",
+  "i",
+  "in",
+  "is",
+  "it",
+  "map",
+  "of",
+  "on",
+  "or",
+  "should",
+  "the",
+  "this",
+  "to",
+  "what",
+  "why",
+  "with"
+]);
+
+function tokenizeSearchTerms(query) {
+  return normalizeLabel(query)
+    .split(" ")
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 3 && !SEARCH_STOP_WORDS.has(term));
+}
+
 function searchGraph(db, sessionId, query) {
   const q = normalizeLabel(query);
   if (!q) return { query, results: [] };
+  const searchTerms = tokenizeSearchTerms(query);
+  const scopedTerms = searchTerms.length ? searchTerms : [q];
 
   const graph = buildSessionGraph(db, sessionId);
   const results = [];
 
   for (const node of graph.nodes) {
     const haystack = normalizeLabel(`${node.label} ${node.description ?? ""} ${node.summary ?? ""} ${node.whyThisExists ?? ""}`);
-    if (!haystack.includes(q)) continue;
+    const phraseMatch = haystack.includes(q);
+    const matchedTerms = scopedTerms.filter((term) => haystack.includes(term));
+    if (!phraseMatch && matchedTerms.length === 0) continue;
     results.push({
       kind: "node",
       id: node.id,
@@ -1298,13 +1600,16 @@ function searchGraph(db, sessionId, query) {
       confidence: node.confidence ?? 0,
       masteryState: node.masteryState,
       evidenceCount: node.evidenceCount ?? 0,
-      snippet: node.summary || node.whyThisExists
+      snippet: node.summary || node.whyThisExists,
+      score: (phraseMatch ? 100 : 0) + matchedTerms.length
     });
   }
 
   for (const artifact of graph.artifacts) {
     const haystack = normalizeLabel(`${artifact.title} ${artifact.excerpt ?? ""} ${artifact.contentPreview ?? ""} ${artifact.sourceType ?? ""}`);
-    if (!haystack.includes(q)) continue;
+    const phraseMatch = haystack.includes(q);
+    const matchedTerms = scopedTerms.filter((term) => haystack.includes(term));
+    if (!phraseMatch && matchedTerms.length === 0) continue;
     results.push({
       kind: "source",
       id: artifact.id,
@@ -1313,49 +1618,418 @@ function searchGraph(db, sessionId, query) {
       confidence: artifact.ingestStatus === "classified" ? 0.8 : 0.5,
       evidenceCount: 1,
       snippet: artifact.excerpt || artifact.contentPreview,
-      url: artifact.url
+      url: artifact.url,
+      score: (phraseMatch ? 100 : 0) + matchedTerms.length
     });
   }
 
   return {
     query,
     results: results
-      .sort((left, right) => (right.evidenceCount - left.evidenceCount) || ((right.confidence ?? 0) - (left.confidence ?? 0)))
+      .sort((left, right) =>
+        ((right.score ?? 0) - (left.score ?? 0))
+        || (right.evidenceCount - left.evidenceCount)
+        || ((right.confidence ?? 0) - (left.confidence ?? 0))
+      )
       .slice(0, 20)
+      .map(({ score, ...result }) => result)
   };
 }
 
-function buildRefineGraphSnapshot(graph) {
+function buildRefineSnapshotNode(node, { compact = false } = {}) {
+  const snapshotNode = {
+    id: node.id,
+    label: node.label,
+    type: node.type,
+    description: node.description || "",
+    confidence: Number((node.confidence ?? 0).toFixed(2)),
+    evidenceCount: node.evidenceCount ?? 0,
+    masteryState: node.masteryState
+  };
+
+  if (!compact) {
+    snapshotNode.summary = node.summary || "";
+    snapshotNode.whyThisExists = node.whyThisExists;
+  }
+
+  return snapshotNode;
+}
+
+function buildRefineSnapshotArtifact(artifact, { compact = false } = {}) {
+  return {
+    id: artifact.id,
+    title: artifact.title,
+    sourceType: artifact.sourceType,
+    ...(compact ? {} : { excerpt: artifact.excerpt })
+  };
+}
+
+function buildRefineGraphSnapshotShape(graph, { includedNodeIds = null, compact = false, artifactLimit = 8 } = {}) {
+  const safeNodeIds = includedNodeIds instanceof Set ? includedNodeIds : null;
   return {
     mapName: graph.session?.goal || "Untitled map",
     nodes: graph.nodes
       .filter((node) => USER_CREATABLE_NODE_TYPES.has(node.type))
-      .map((node) => ({
-        id: node.id,
-        label: node.label,
-        type: node.type,
-        description: node.description || "",
-        summary: node.summary || "",
-        confidence: Number((node.confidence ?? 0).toFixed(2)),
-        evidenceCount: node.evidenceCount ?? 0,
-        masteryState: node.masteryState,
-        whyThisExists: node.whyThisExists
+      .filter((node) => !safeNodeIds || safeNodeIds.has(node.id))
+      .map((node) => buildRefineSnapshotNode(node, { compact })),
+    edges: graph.edges
+      .filter((edge) => !safeNodeIds || (safeNodeIds.has(edge.source) && safeNodeIds.has(edge.target)))
+      .map((edge) => ({
+        key: edge.key,
+        source: edge.source,
+        target: edge.target,
+        type: edge.type,
+        label: edge.label,
+        confidence: Number((edge.confidence ?? 0).toFixed(2))
       })),
-    edges: graph.edges.map((edge) => ({
-      key: edge.key,
-      source: edge.source,
-      target: edge.target,
-      type: edge.type,
-      label: edge.label,
-      confidence: Number((edge.confidence ?? 0).toFixed(2))
-    })),
-    artifacts: graph.artifacts.slice(-8).map((artifact) => ({
-      id: artifact.id,
-      title: artifact.title,
-      sourceType: artifact.sourceType,
-      excerpt: artifact.excerpt
-    }))
+    artifacts: graph.artifacts
+      .slice(-artifactLimit)
+      .map((artifact) => buildRefineSnapshotArtifact(artifact, { compact }))
   };
+}
+
+function buildFullRefineGraphSnapshot(graph) {
+  return buildRefineGraphSnapshotShape(graph);
+}
+
+function buildRefineLabelKey(node) {
+  return `${node.type}:${normalizeLabel(node.label)}`;
+}
+
+function buildLocalRefineAdjacency(graph, nodeMap) {
+  const adjacency = new Map(Array.from(nodeMap.keys(), (nodeId) => [nodeId, new Set()]));
+
+  for (const edge of graph.edges ?? []) {
+    if (!nodeMap.has(edge.source) || !nodeMap.has(edge.target)) continue;
+    adjacency.get(edge.source)?.add(edge.target);
+    adjacency.get(edge.target)?.add(edge.source);
+  }
+
+  return adjacency;
+}
+
+function getLocalRefineNodePriority(node) {
+  switch (node?.type) {
+    case "goal":
+      return 0;
+    case "domain":
+      return 1;
+    case "skill":
+      return 2;
+    case "concept":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function getPrimaryLocalRefineContextKey(node, adjacency, nodeMap) {
+  const neighbors = Array.from(adjacency.get(node.id) ?? [])
+    .map((neighborId) => nodeMap.get(neighborId))
+    .filter((neighbor) => neighbor && neighbor.type !== "concept")
+    .sort((left, right) =>
+      getLocalRefineNodePriority(left) - getLocalRefineNodePriority(right)
+      || ((right.evidenceCount ?? 0) - (left.evidenceCount ?? 0))
+      || left.label.localeCompare(right.label)
+    );
+
+  return neighbors[0]?.id ?? `concept:${normalizeLabel(node.label)}`;
+}
+
+function buildLocalRefineCandidateGroups(graph) {
+  const sessionNodes = graph.nodes.filter((node) => USER_CREATABLE_NODE_TYPES.has(node.type));
+  const nodeMap = new Map(sessionNodes.map((node) => [node.id, node]));
+  const adjacency = buildLocalRefineAdjacency(graph, nodeMap);
+  const labelGroups = new Map();
+  for (const node of sessionNodes) {
+    const labelKey = buildRefineLabelKey(node);
+    const nodesForLabel = labelGroups.get(labelKey) ?? [];
+    nodesForLabel.push(node);
+    labelGroups.set(labelKey, nodesForLabel);
+  }
+
+  const duplicateGroups = Array.from(labelGroups.values())
+    .filter((nodes) => nodes.length > 1)
+    .sort((left, right) =>
+      getLocalRefineNodePriority(left[0]) - getLocalRefineNodePriority(right[0])
+      || (right.length - left.length)
+      || left[0].label.localeCompare(right[0].label)
+    )
+    .map((nodes) => nodes.map((node) => node.id));
+  const duplicateNodeIds = new Set(duplicateGroups.flat());
+  const missingEvidenceBuckets = new Map();
+
+  const missingEvidenceConcepts = sessionNodes
+    .filter((node) => node.type === "concept")
+    .filter((node) => !duplicateNodeIds.has(node.id))
+    .filter((node) => (node.evidenceCount ?? 0) === 0)
+    .filter((node) => !/Gap analysis flagged/i.test(String(node.whyThisExists ?? "")))
+    .sort((left, right) =>
+      ((left.confidence ?? 0) - (right.confidence ?? 0))
+      || left.label.localeCompare(right.label)
+    );
+
+  for (const node of missingEvidenceConcepts) {
+    const contextKey = getPrimaryLocalRefineContextKey(node, adjacency, nodeMap);
+    const bucket = missingEvidenceBuckets.get(contextKey) ?? [];
+    bucket.push(node);
+    missingEvidenceBuckets.set(contextKey, bucket);
+  }
+
+  const missingEvidenceGroups = [];
+  for (const bucket of missingEvidenceBuckets.values()) {
+    for (let index = 0; index < bucket.length; index += LOCAL_REFINE_MISSING_EVIDENCE_GROUP_SIZE) {
+      missingEvidenceGroups.push(bucket.slice(index, index + LOCAL_REFINE_MISSING_EVIDENCE_GROUP_SIZE).map((node) => node.id));
+    }
+  }
+
+  return [...duplicateGroups, ...missingEvidenceGroups];
+}
+
+function buildLocalRefineGroupSnapshot(graph, groupNodeIds) {
+  const sessionNodes = graph.nodes.filter((node) => USER_CREATABLE_NODE_TYPES.has(node.type));
+  const nodeMap = new Map(sessionNodes.map((node) => [node.id, node]));
+  const adjacency = buildLocalRefineAdjacency(graph, nodeMap);
+  const includedNodeIds = new Set(groupNodeIds.filter((nodeId) => nodeMap.has(nodeId)));
+  const goalNode = sessionNodes.find((node) => node.type === "goal") ?? null;
+
+  if (goalNode && !includedNodeIds.has(goalNode.id) && includedNodeIds.size < LOCAL_REFINE_SNAPSHOT_NODE_LIMIT) {
+    includedNodeIds.add(goalNode.id);
+  }
+
+  const neighborCandidates = Array.from(new Set(
+    [...includedNodeIds].flatMap((nodeId) => Array.from(adjacency.get(nodeId) ?? []))
+  ))
+    .filter((nodeId) => !includedNodeIds.has(nodeId))
+    .map((nodeId) => nodeMap.get(nodeId))
+    .filter(Boolean)
+    .sort((left, right) =>
+      getLocalRefineNodePriority(left) - getLocalRefineNodePriority(right)
+      || ((right.evidenceCount ?? 0) - (left.evidenceCount ?? 0))
+      || ((right.confidence ?? 0) - (left.confidence ?? 0))
+      || left.label.localeCompare(right.label)
+    );
+
+  for (const neighbor of neighborCandidates) {
+    if (includedNodeIds.size >= LOCAL_REFINE_SNAPSHOT_NODE_LIMIT) break;
+    includedNodeIds.add(neighbor.id);
+  }
+
+  return buildRefineGraphSnapshotShape(graph, {
+    includedNodeIds,
+    compact: true,
+    artifactLimit: LOCAL_REFINE_ARTIFACT_LIMIT
+  });
+}
+
+function buildLocalRefineGraphSnapshots(graph) {
+  const sessionNodes = graph.nodes.filter((node) => USER_CREATABLE_NODE_TYPES.has(node.type));
+  if (sessionNodes.length <= LOCAL_REFINE_SNAPSHOT_NODE_LIMIT) {
+    return [buildRefineGraphSnapshotShape(graph, { compact: true, artifactLimit: LOCAL_REFINE_ARTIFACT_LIMIT })];
+  }
+
+  const candidateGroups = buildLocalRefineCandidateGroups(graph);
+  if (!candidateGroups.length) {
+    return [buildRefineGraphSnapshotShape(graph, { compact: true, artifactLimit: LOCAL_REFINE_ARTIFACT_LIMIT })];
+  }
+
+  const snapshots = [];
+  const seenSnapshotKeys = new Set();
+
+  for (const candidateGroup of candidateGroups) {
+    const snapshot = buildLocalRefineGroupSnapshot(graph, candidateGroup);
+    const snapshotKey = snapshot.nodes.map((node) => node.id).sort().join("|");
+    if (!snapshotKey || seenSnapshotKeys.has(snapshotKey) || snapshot.nodes.length < 2) continue;
+    seenSnapshotKeys.add(snapshotKey);
+    snapshots.push(snapshot);
+  }
+
+  return snapshots.length
+    ? snapshots
+    : [buildRefineGraphSnapshotShape(graph, { compact: true, artifactLimit: LOCAL_REFINE_ARTIFACT_LIMIT })];
+}
+
+function buildRefineGraphSnapshots(graph, { llmProvider = null } = {}) {
+  const llmSelection = normalizeLlmSelection(llmProvider);
+  return llmSelection.provider === "local"
+    ? buildLocalRefineGraphSnapshots(graph)
+    : [buildFullRefineGraphSnapshot(graph)];
+}
+
+function dedupeBy(items, getKey) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const item of items) {
+    const key = getKey(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+
+  return deduped;
+}
+
+function mergeRefinePlans(plans) {
+  const safePlans = Array.isArray(plans) ? plans.filter((plan) => plan && typeof plan === "object") : [];
+  return {
+    summary: Array.from(new Set(
+      safePlans
+        .map((plan) => String(plan.summary ?? "").trim())
+        .filter(Boolean)
+    )).join(" "),
+    rename_nodes: dedupeBy(
+      safePlans.flatMap((plan) => (Array.isArray(plan.rename_nodes) ? plan.rename_nodes : [])),
+      (operation) => String(operation?.id ?? "").trim()
+    ),
+    merge_nodes: dedupeBy(
+      safePlans.flatMap((plan) => (Array.isArray(plan.merge_nodes) ? plan.merge_nodes : [])),
+      (operation) => `${String(operation?.sourceId ?? "").trim()}->${String(operation?.targetId ?? "").trim()}`
+    ),
+    add_edges: dedupeBy(
+      safePlans.flatMap((plan) => (Array.isArray(plan.add_edges) ? plan.add_edges : [])),
+      (operation) => `${String(operation?.sourceId ?? "").trim()}|${String(operation?.type ?? "").trim()}|${String(operation?.targetId ?? "").trim()}`
+    ),
+    remove_edges: dedupeBy(
+      safePlans.flatMap((plan) => (Array.isArray(plan.remove_edges) ? plan.remove_edges : [])),
+      (operation) => String(operation?.key ?? "").trim()
+    )
+  };
+}
+
+function buildDeterministicDuplicateMergeOperations(graph) {
+  const sessionNodes = graph.nodes.filter((node) => USER_CREATABLE_NODE_TYPES.has(node.type));
+  const labelGroups = new Map();
+
+  for (const node of sessionNodes) {
+    const labelKey = buildRefineLabelKey(node);
+    const group = labelGroups.get(labelKey) ?? [];
+    group.push(node);
+    labelGroups.set(labelKey, group);
+  }
+
+  return Array.from(labelGroups.values())
+    .filter((group) => group.length > 1 && group[0]?.type !== "goal")
+    .flatMap((group) => {
+      const [target, ...sources] = [...group].sort((left, right) =>
+        ((right.evidenceCount ?? 0) - (left.evidenceCount ?? 0))
+        || ((right.confidence ?? 0) - (left.confidence ?? 0))
+        || ((left.createdAt ?? 0) - (right.createdAt ?? 0))
+        || left.id.localeCompare(right.id)
+      );
+
+      return sources.map((source) => ({
+        sourceId: source.id,
+        targetId: target.id,
+        reason: `Exact duplicate ${source.type} label "${source.label}" found in this map.`
+      }));
+    });
+}
+
+function buildDeterministicLocalRefinePlan(graph) {
+  const merge_nodes = buildDeterministicDuplicateMergeOperations(graph);
+
+  if (!merge_nodes.length) return null;
+
+  return {
+    summary: "Applied conservative duplicate-label cleanup after the local model could not return valid structured refine JSON.",
+    rename_nodes: [],
+    merge_nodes,
+    add_edges: [],
+    remove_edges: []
+  };
+}
+
+function applyAutomaticDuplicateCleanup(db, sessionId) {
+  const session = getSession(db, sessionId);
+  if (!session) {
+    return {
+      merged: 0,
+      sourceToTargetIds: new Map()
+    };
+  }
+
+  const mergeOps = buildDeterministicDuplicateMergeOperations(buildSessionGraph(db, sessionId));
+  if (!mergeOps.length) {
+    return {
+      merged: 0,
+      sourceToTargetIds: new Map()
+    };
+  }
+
+  const primaryGoalId = getSessionGoal(db, sessionId)?.id ?? null;
+  const sourceToTargetIds = new Map();
+  let merged = 0;
+
+  for (const operation of mergeOps.slice(0, 24)) {
+    const sourceId = String(operation?.sourceId ?? "").trim();
+    const targetId = String(operation?.targetId ?? "").trim();
+    if (!sourceId || !targetId || sourceId === targetId) continue;
+    if (primaryGoalId && sourceId === primaryGoalId) continue;
+
+    const result = mergeNodeIntoTarget(db, sessionId, sourceId, targetId);
+    if (!result.ok) continue;
+
+    sourceToTargetIds.set(sourceId, result.target.id);
+    merged += 1;
+  }
+
+  return {
+    merged,
+    sourceToTargetIds
+  };
+}
+
+function resolveCanonicalSessionNodeId(nodeId, dedupeResult) {
+  let resolvedId = String(nodeId ?? "").trim();
+  const mapping = dedupeResult?.sourceToTargetIds;
+
+  if (!resolvedId || !(mapping instanceof Map) || !mapping.size) {
+    return resolvedId;
+  }
+
+  const visited = new Set([resolvedId]);
+  while (mapping.has(resolvedId)) {
+    const nextId = String(mapping.get(resolvedId) ?? "").trim();
+    if (!nextId || visited.has(nextId)) break;
+    visited.add(nextId);
+    resolvedId = nextId;
+  }
+
+  return resolvedId;
+}
+
+function resolveCanonicalSessionNode(db, sessionId, nodeId, dedupeResult) {
+  const canonicalId = resolveCanonicalSessionNodeId(nodeId, dedupeResult);
+  if (!canonicalId) return null;
+
+  return db.data.nodes.find((node) => node.id === canonicalId && hasSessionMembership(node, sessionId) && !isRejectedForSession(node, sessionId))
+    ?? db.data.nodes.find((node) => node.id === canonicalId && hasSessionMembership(node, sessionId))
+    ?? null;
+}
+
+function resolveCanonicalNodeReference(db, sessionId, reference, dedupeResult) {
+  if (!reference?.id) return reference;
+  const canonicalNode = resolveCanonicalSessionNode(db, sessionId, reference.id, dedupeResult);
+  if (!canonicalNode) return reference;
+  return {
+    id: canonicalNode.id,
+    label: canonicalNode.label
+  };
+}
+
+function dedupeNodeReferences(items) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const item of Array.isArray(items) ? items : []) {
+    const key = String(item?.id ?? item?.label ?? "").trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+
+  return deduped;
 }
 
 function buildRefineStatusMessage(summary) {
@@ -1368,14 +2042,7 @@ function buildRefineStatusMessage(summary) {
   return parts.length ? `Refined map: ${parts.join(", ")}.` : "The refine pass did not find any safe graph changes to apply.";
 }
 
-async function refineSessionGraph({ db, openaiClient, sessionId }) {
-  if (!openaiClient) {
-    return {
-      status: 400,
-      body: { ok: false, error: "OpenAI is not configured, so refine is unavailable." }
-    };
-  }
-
+async function refineSessionGraph({ db, llmRuntime, sessionId }) {
   const session = getSession(db, sessionId);
   if (!session) {
     return {
@@ -1385,25 +2052,43 @@ async function refineSessionGraph({ db, openaiClient, sessionId }) {
   }
 
   const graph = buildSessionGraph(db, sessionId);
-  const snapshot = buildRefineGraphSnapshot(graph);
+  const llmSelection = normalizeLlmSelection(llmRuntime?.llmProvider);
+  const snapshots = buildRefineGraphSnapshots(graph, { llmProvider: llmSelection });
+  const localRefineScopeNote = llmSelection.provider === "local"
+    ? snapshots.length > 1
+      ? "This is one cleanup-focused chunk from a larger map. Refine only the nodes, edges, and artifacts shown here."
+      : "This snapshot is the cleanup-focused subset of a larger map. Refine only the nodes, edges, and artifacts shown here."
+    : "";
+  const localRefineOutputNote = llmSelection.provider === "local"
+    ? "- choose only the highest-confidence cleanup changes from this chunk\n- return at most 2 rename_nodes, 2 merge_nodes, 3 add_edges, and 4 remove_edges"
+    : "";
 
-  if (snapshot.nodes.length < 2) {
+  if (!snapshots.some((snapshot) => snapshot.nodes.length >= 2)) {
     return {
       status: 400,
       body: { ok: false, error: "Add a few nodes before running refine." }
     };
   }
 
-  const refinePlan = await requestStructuredJson(openaiClient, {
-    model: "gpt-4o-mini",
-    label: "Graph refinement",
-    timeoutMs: 22000,
-    temperature: 0.2,
-    max_completion_tokens: 700,
-    messages: [
-      {
-        role: "system",
-        content: `You are refining a MindWeaver knowledge map.
+  const partialRefineWarnings = [];
+  let skippedLocalRefineChunkCount = 0;
+  const refinePlans = [];
+
+  for (const [index, snapshot] of snapshots.entries()) {
+    if (snapshot.nodes.length < 2) continue;
+
+    try {
+      refinePlans.push(await requestStructuredJson(llmRuntime, {
+        model: "gpt-4o-mini",
+        label: snapshots.length > 1 ? `Graph refinement chunk ${index + 1}` : "Graph refinement",
+        timeoutMs: 22000,
+        temperature: llmSelection.provider === "local" ? 0 : 0.2,
+        max_completion_tokens: llmSelection.provider === "local" ? 420 : 700,
+        schema: STRUCTURED_RESPONSE_SCHEMAS.graphRefinement,
+        messages: [
+          {
+            role: "system",
+            content: `You are refining a MindWeaver knowledge map.
 
 Improve coherence conservatively:
 - fix inaccurate, redundant, weak, or misplaced nodes when the current graph already provides enough evidence
@@ -1411,6 +2096,7 @@ Improve coherence conservatively:
 - prefer rename, retype, merge, and edge cleanup over destructive removal
 - do not invent new facts that are not already supported by the graph snapshot
 - do not output markdown fences
+${localRefineOutputNote}
 
 Return JSON only with this shape:
 {
@@ -1445,17 +2131,50 @@ Return JSON only with this shape:
     }
   ]
 }`
-      },
-      {
-        role: "user",
-        content: `Refine this MindWeaver map without deleting useful information unnecessarily.
+          },
+          {
+            role: "user",
+            content: `Refine this MindWeaver map without deleting useful information unnecessarily.
+
+${localRefineScopeNote}
 
 ${JSON.stringify(snapshot, null, 2)}`
+          }
+        ]
+      }));
+    } catch (error) {
+      if (error?.code === "LLM_UNAVAILABLE") {
+        return {
+          status: 400,
+          body: { ok: false, error: error.message || "MindWeaver could not reach the selected language model." }
+        };
       }
-    ]
-  }).catch(() => null);
 
-  if (!refinePlan || typeof refinePlan !== "object") {
+      if (llmSelection.provider !== "local" && snapshots.length === 1) {
+        return {
+          status: 502,
+          body: { ok: false, error: error.message || "MindWeaver could not produce a refinement plan right now." }
+        };
+      }
+
+      skippedLocalRefineChunkCount += 1;
+    }
+  }
+
+  if (skippedLocalRefineChunkCount > 0) {
+    partialRefineWarnings.push(`Skipped ${skippedLocalRefineChunkCount} local refine chunk${skippedLocalRefineChunkCount === 1 ? "" : "s"} because the model did not return valid structured cleanup output.`);
+  }
+
+  if (!refinePlans.length && llmSelection.provider === "local") {
+    const deterministicFallbackPlan = buildDeterministicLocalRefinePlan(graph);
+    if (deterministicFallbackPlan) {
+      refinePlans.push(deterministicFallbackPlan);
+      partialRefineWarnings.push("The local model did not return valid structured cleanup JSON, so MindWeaver applied conservative duplicate-label cleanup instead.");
+    }
+  }
+
+  const refinePlan = mergeRefinePlans(refinePlans);
+  if (!refinePlans.length || !refinePlan || typeof refinePlan !== "object") {
     return {
       status: 502,
       body: { ok: false, error: "MindWeaver could not produce a refinement plan right now." }
@@ -1468,7 +2187,7 @@ ${JSON.stringify(snapshot, null, 2)}`
     merged: 0,
     addedEdges: 0,
     removedEdges: 0,
-    warnings: []
+    warnings: [...partialRefineWarnings]
   };
   const primaryGoal = getSessionGoal(db, sessionId);
   const primaryGoalId = primaryGoal?.id ?? null;
@@ -1560,6 +2279,12 @@ ${JSON.stringify(snapshot, null, 2)}`
     if (result.ok) summary.merged += 1;
   }
 
+  const automaticCleanup = applyAutomaticDuplicateCleanup(db, sessionId);
+  if (automaticCleanup.merged) {
+    summary.merged += automaticCleanup.merged;
+    summary.warnings.push("Applied exact duplicate-label cleanup after the map update.");
+  }
+
   await db.write();
 
   return {
@@ -1613,6 +2338,112 @@ function buildLearningSummary(db, sessionId) {
   };
 }
 
+function normalizeQuizCorrectIndex(value) {
+  if (Number.isInteger(value) && value >= 0 && value <= 3) return value;
+  if (typeof value === "string" && /^[0-3]$/.test(value.trim())) return Number(value.trim());
+  return null;
+}
+
+function normalizeQuizGenerationPayload(payload, allowedConceptLabels = []) {
+  const conceptMap = new Map(
+    allowedConceptLabels
+      .map((label) => String(label ?? "").trim())
+      .filter(Boolean)
+      .map((label) => [normalizeLabel(label), label])
+  );
+  const rawQuestions = Array.isArray(payload?.questions)
+    ? payload.questions
+    : Array.isArray(payload)
+      ? payload
+      : [];
+
+  const questions = rawQuestions
+    .map((rawQuestion) => {
+      if (!rawQuestion || typeof rawQuestion !== "object" || Array.isArray(rawQuestion)) return null;
+
+      const rawConcept = String(rawQuestion.concept ?? "").trim();
+      const conceptKey = normalizeLabel(rawConcept);
+      const concept = conceptMap.get(conceptKey) ?? rawConcept;
+      if (!concept || (conceptMap.size && !conceptMap.has(conceptKey))) return null;
+
+      let correct = normalizeQuizCorrectIndex(rawQuestion.correct);
+      const options = [];
+
+      for (const rawOption of Array.isArray(rawQuestion.options) ? rawQuestion.options : []) {
+        if (correct === null && rawOption && typeof rawOption === "object" && !Array.isArray(rawOption)) {
+          const embeddedCorrect = normalizeQuizCorrectIndex(rawOption.correct);
+          if (embeddedCorrect !== null) {
+            correct = embeddedCorrect;
+            continue;
+          }
+        }
+
+        if (correct === null && typeof rawOption === "string") {
+          const embeddedCorrectMatch = rawOption.match(/^correct\s*[:=-]?\s*([0-3])$/i);
+          if (embeddedCorrectMatch) {
+            correct = Number(embeddedCorrectMatch[1]);
+            continue;
+          }
+        }
+
+        const option = typeof rawOption === "string"
+          ? rawOption.trim()
+          : rawOption && typeof rawOption === "object" && typeof rawOption.text === "string"
+            ? rawOption.text.trim()
+            : "";
+        if (!option) continue;
+        options.push(option);
+        if (options.length >= 4) break;
+      }
+
+      const questionText = String(rawQuestion.q ?? rawQuestion.question ?? "").trim();
+      if (!questionText || options.length !== 4 || correct === null) return null;
+
+      return {
+        concept,
+        q: questionText,
+        options,
+        correct
+      };
+    })
+    .filter(Boolean);
+
+  return { questions };
+}
+
+function normalizeLooseShortListInput(values) {
+  if (Array.isArray(values)) return values;
+  if (typeof values !== "string") return [];
+
+  const trimmed = values.trim();
+  if (!trimmed) return [];
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // Fall through to delimiter-based parsing for list-like strings.
+  }
+
+  return trimmed
+    .split(/\r?\n|[,;•]+/)
+    .map((value) => value.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
+}
+
+function normalizeSourceClassificationPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+
+  return {
+    domain: String(payload.domain ?? "").trim(),
+    skill: String(payload.skill ?? "").trim(),
+    concepts: sanitizeShortList(normalizeLooseShortListInput(payload.concepts), {
+      maxItems: 8,
+      maxLength: 100
+    })
+  };
+}
+
 function deleteSessionData(db, sessionId) {
   const sessionExists = db.data.sessions.some((session) => session.id === sessionId);
   if (!sessionExists) return false;
@@ -1641,12 +2472,14 @@ function deleteSessionData(db, sessionId) {
   return true;
 }
 
-function validateIngestPayload(body, { allowSyntheticUrl = false } = {}) {
+function validateIngestPayload(body, { allowSyntheticUrl = false, llmProvider = null } = {}) {
   const errors = [];
 
   if (!body || typeof body !== "object") {
     return { ok: false, errors: ["Request body must be a JSON object."] };
   }
+
+  const maxContentChars = getMaxIngestContentChars(llmProvider ?? body?.llmProvider);
 
   if (!String(body.sessionId ?? "").trim()) errors.push("sessionId is required.");
   if (!allowSyntheticUrl && !String(body.url ?? "").trim()) errors.push("url is required.");
@@ -1656,7 +2489,7 @@ function validateIngestPayload(body, { allowSyntheticUrl = false } = {}) {
   if (body.content !== undefined && typeof body.content !== "string") errors.push("content must be a string.");
   if (body.sourceType !== undefined && typeof body.sourceType !== "string") errors.push("sourceType must be a string.");
   if (typeof body.sourceType === "string" && !ALLOWED_SOURCE_TYPES.has(body.sourceType.toLowerCase())) errors.push(`sourceType must be one of: ${[...ALLOWED_SOURCE_TYPES].join(", ")}.`);
-  if (typeof body.content === "string" && body.content.length > MAX_INGEST_CONTENT_CHARS) errors.push(`content must be ${MAX_INGEST_CONTENT_CHARS} characters or less.`);
+  if (typeof body.content === "string" && body.content.length > maxContentChars) errors.push(`content must be ${maxContentChars} characters or less.`);
 
   return {
     ok: errors.length === 0,
@@ -1994,7 +2827,12 @@ async function ingestChatHistoryImport({ db, sessionId, importData }) {
     }
   }
 
-  artifact.conceptIds = [...conceptIds];
+  const automaticCleanup = applyAutomaticDuplicateCleanup(db, sessionId);
+  artifact.conceptIds = [...new Set(
+    [...conceptIds]
+      .map((conceptId) => resolveCanonicalSessionNodeId(conceptId, automaticCleanup))
+      .filter(Boolean)
+  )];
 
   await db.write();
   return {
@@ -2142,12 +2980,14 @@ function createDemoSession(db) {
   return session;
 }
 
-async function ingestSource({ db, openaiClient, payload }) {
+async function ingestSource({ db, llmRuntime, payload }) {
   const sessionId = String(payload.sessionId).trim();
   const session = getSession(db, sessionId);
   const title = String(payload.title ?? "").trim();
   const excerpt = String(payload.excerpt ?? "").trim();
   const content = String(payload.content ?? "");
+  const llmSelection = normalizeLlmSelection(llmRuntime?.llmProvider);
+  const contentLimitChars = getLlmContentLimit(llmRuntime?.llmProvider);
   const sourceType = String(payload.sourceType ?? "page").trim().toLowerCase() || "page";
   const normalizedUrl = normalizeUrl(payload.url) ?? createSyntheticUrl(sourceType, title || "imported-source");
 
@@ -2194,23 +3034,86 @@ async function ingestSource({ db, openaiClient, payload }) {
     addedAt: Date.now(),
     lastSeenAt: Date.now(),
     viewCount: 1,
-    ingestStatus: openaiClient ? "pending" : "stored"
+    ingestStatus: "pending"
   };
   db.data.artifacts.push(artifact);
 
   let classification = null;
   let domain = null;
   let skill = null;
-  const concepts = [];
+  let concepts = [];
+  const truncatedContent = content.slice(0, contentLimitChars);
+  const condensedLocalContent = llmSelection.provider === "local"
+    ? buildLocalStructuredIngestExcerpt(truncatedContent)
+    : truncatedContent;
+  const focusedLocalContent = llmSelection.provider === "local"
+    ? buildLocalFocusedIngestExcerpt(truncatedContent)
+    : truncatedContent;
+  const excerptLocalContent = llmSelection.provider === "local"
+    ? buildLocalFocusedIngestExcerpt(artifact.excerpt || truncatedContent, artifact.excerpt ? Math.max(280, artifact.excerpt.length) : 480)
+    : truncatedContent;
+  const localRetryNote = "This is a condensed excerpt from a longer source. Base your answer only on the excerpt shown here.";
+  const sourceClassificationGraphContext = llmSelection.provider === "local" ? "" : buildGraphContext(db);
 
-  if (openaiClient) {
-    const worthiness = await requestStructuredJson(openaiClient, {
+  async function requestStructuredIngestJson({
+    label,
+    schema,
+    timeoutMs,
+    max_completion_tokens,
+    normalizeResult = null,
+    buildUserContent
+  }) {
+    const baseOptions = {
       model: "gpt-4o-mini",
+      temperature: llmSelection.provider === "local" ? 0 : 0.2,
+      schema
+    };
+
+    const attemptRequest = (bodyContent, retryContext = {}) =>
+      requestStructuredJson(llmRuntime, {
+        ...baseOptions,
+        label,
+        timeoutMs: llmSelection.provider === "local" ? Math.max(timeoutMs, 30000) : timeoutMs,
+        max_completion_tokens,
+        normalizeResult,
+        messages: buildUserContent(bodyContent, retryContext)
+      });
+
+    try {
+      return await attemptRequest(truncatedContent);
+    } catch (error) {
+      if (llmSelection.provider !== "local") throw error;
+
+      const fallbackAttempts = [
+        { bodyContent: condensedLocalContent, retryContext: { condensed: true } },
+        { bodyContent: focusedLocalContent, retryContext: { condensed: true, focused: true, localCompact: true } },
+        { bodyContent: excerptLocalContent, retryContext: { condensed: true, excerptOnly: true, localCompact: true } }
+      ].filter(({ bodyContent }, index, values) => (
+        bodyContent
+        && bodyContent !== truncatedContent
+        && values.findIndex((entry) => entry.bodyContent === bodyContent) === index
+      ));
+
+      let lastError = error;
+      for (const { bodyContent, retryContext } of fallbackAttempts) {
+        try {
+          return await attemptRequest(bodyContent, retryContext);
+        } catch (fallbackError) {
+          lastError = fallbackError;
+        }
+      }
+
+      throw lastError;
+    }
+  }
+
+  try {
+    const worthiness = await requestStructuredIngestJson({
       label: "Source worthiness check",
+      schema: STRUCTURED_RESPONSE_SCHEMAS.sourceWorthiness,
       timeoutMs: 12000,
-      temperature: 0.2,
       max_completion_tokens: 120,
-      messages: [
+      buildUserContent: (bodyContent, { condensed = false } = {}) => [
         {
           role: "system",
           content: `Evaluate whether this ${getSourceTypeLabel(sourceType)} has substantive educational content worth adding to a knowledge graph.
@@ -2220,10 +3123,10 @@ Return only JSON: {"should_ingest": true/false, "reason": "brief explanation"}`
           role: "user",
           content: `Title: ${artifact.title}
 Type: ${getSourceTypeLabel(sourceType)}
-Content preview: ${content.slice(0, OPENAI_CONTENT_LIMIT)}`
+${condensed ? `${localRetryNote}\n` : ""}Content preview: ${bodyContent}`
         }
       ]
-    }).catch(() => null);
+    });
 
     if (worthiness?.should_ingest === false) {
       artifact.ingestStatus = "rejected";
@@ -2235,17 +3138,23 @@ Content preview: ${content.slice(0, OPENAI_CONTENT_LIMIT)}`
       };
     }
 
-    classification = await requestStructuredJson(openaiClient, {
-      model: "gpt-4o-mini",
+    classification = await requestStructuredIngestJson({
       label: "Source classification",
+      schema: STRUCTURED_RESPONSE_SCHEMAS.sourceClassification,
       timeoutMs: 15000,
-      temperature: 0.2,
       max_completion_tokens: 360,
-      messages: [
+      normalizeResult: normalizeSourceClassificationPayload,
+      buildUserContent: (bodyContent, { condensed = false, localCompact = false } = {}) => [
         {
           role: "system",
-          content: `You are a knowledge graph classifier.
-${buildGraphContext(db)}
+          content: localCompact
+            ? `Return one compact JSON object only with keys domain, skill, and concepts.
+Use 1 domain, 1 skill, and 1-5 concepts.
+Prefer the main topic from the lead section of the source.
+No prose, no markdown, no analysis.
+Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}`
+            : `You are a knowledge graph classifier.
+ ${sourceClassificationGraphContext}
 
 Classify this source into one domain, one skill, and 1-8 core concepts.
 Do not reuse or snap to existing graph nodes just because they look similar. Generate fresh labels from the current source alone.
@@ -2258,10 +3167,13 @@ Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}`
           role: "user",
           content: `Title: ${artifact.title}
 Type: ${getSourceTypeLabel(sourceType)}
-Content: ${content.slice(0, OPENAI_CONTENT_LIMIT)}`
+${artifact.excerpt ? `Excerpt: ${artifact.excerpt}\n` : ""}
+${condensed ? `${localRetryNote}\n` : ""}Content: ${bodyContent}`
         }
       ]
-    }).catch(() => null);
+    });
+  } catch {
+    artifact.ingestStatus = "stored";
   }
 
   const sessionGoal = getSessionGoal(db, sessionId);
@@ -2333,31 +3245,36 @@ Content: ${content.slice(0, OPENAI_CONTENT_LIMIT)}`
   }
 
   let directlyCoveredConcepts = concepts.map((concept) => concept.label);
-  if (openaiClient && concepts.length > 1) {
-    const refinement = await requestStructuredJson(openaiClient, {
-      model: "gpt-4o-mini",
-      label: "Direct concept refinement",
-      timeoutMs: 12000,
-      temperature: 0.2,
-      max_completion_tokens: 140,
-      messages: [
-        {
-          role: "system",
-          content: 'Return only JSON: {"directly_covered": ["concept1", "concept2"]}. Keep only specific concepts directly taught by the source, not vague benefits or outcomes.'
-        },
-        {
-          role: "user",
-          content: `Title: ${artifact.title}
-Content: ${content.slice(0, OPENAI_CONTENT_LIMIT)}
+  if (concepts.length > 1) {
+    try {
+      const refinement = await requestStructuredJson(llmRuntime, {
+        model: "gpt-4o-mini",
+        label: "Direct concept refinement",
+        timeoutMs: 12000,
+        temperature: 0.2,
+        max_completion_tokens: 140,
+        schema: STRUCTURED_RESPONSE_SCHEMAS.directConceptRefinement,
+        messages: [
+          {
+            role: "system",
+            content: 'Return only JSON: {"directly_covered": ["concept1", "concept2"]}. Keep only specific concepts directly taught by the source, not vague benefits or outcomes.'
+          },
+          {
+            role: "user",
+            content: `Title: ${artifact.title}
+Content: ${content.slice(0, contentLimitChars)}
 Concepts: ${concepts.map((concept) => concept.label).join(", ")}
 
 Which concepts are directly taught by this source?`
-        }
-      ]
-    }).catch(() => null);
+          }
+        ]
+      });
 
-    if (Array.isArray(refinement?.directly_covered)) {
-      directlyCoveredConcepts = refinement.directly_covered.map((concept) => normalizeLabel(concept)).filter(Boolean);
+      if (Array.isArray(refinement?.directly_covered)) {
+        directlyCoveredConcepts = refinement.directly_covered.map((concept) => normalizeLabel(concept)).filter(Boolean);
+      }
+    } catch {
+      // Keep the original concept list if the refinement pass is unavailable.
     }
   }
 
@@ -2374,9 +3291,18 @@ Which concepts are directly taught by this source?`
     });
   }
 
+  const automaticCleanup = applyAutomaticDuplicateCleanup(db, sessionId);
+  if (automaticCleanup.merged) {
+    domain = resolveCanonicalNodeReference(db, sessionId, domain, automaticCleanup);
+    skill = resolveCanonicalNodeReference(db, sessionId, skill, automaticCleanup);
+    concepts = dedupeNodeReferences(
+      concepts.map((concept) => resolveCanonicalNodeReference(db, sessionId, concept, automaticCleanup))
+    );
+  }
+
   artifact.classification = {
-    domain: domain?.label ?? normalizedDomainLabel ?? null,
-    skill: skill?.label ?? normalizedSkillLabel ?? null,
+    domain: domain?.label ?? (normalizedDomainLabel || null),
+    skill: skill?.label ?? (normalizedSkillLabel || null),
     concepts: concepts.map((concept) => concept.label)
   };
   artifact.conceptIds = concepts.map((concept) => concept.id);
@@ -2397,11 +3323,60 @@ Which concepts are directly taught by this source?`
   };
 }
 
-export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
+async function buildHealthPayload({ db, openaiClient, ollamaBaseUrl }) {
+  const ollamaStatus = await getOllamaStatus({ baseUrl: ollamaBaseUrl });
+  const llmSettings = getStoredLlmSettings(db);
+  const contentLimitChars = getLlmContentLimit(llmSettings);
+  const maxPayloadContentChars = getMaxIngestContentChars(llmSettings);
+  const localModels = llmSettings.provider === "local"
+    ? mergeSelectedLocalModelHealth(ollamaStatus.models, llmSettings.localModel)
+    : ollamaStatus.models;
+
+  return {
+    ok: true,
+    app: "MindWeaver",
+    localOnly: true,
+    openaiConfigured: Boolean(openaiClient),
+    ollamaAvailable: Boolean(ollamaStatus.available),
+    llmSettings,
+    llmProviders: {
+      openai: {
+        label: "OpenAI",
+        available: Boolean(openaiClient),
+        configured: Boolean(openaiClient),
+        defaultModel: DEFAULT_OPENAI_MODEL
+      },
+      local: {
+        label: "Local (Ollama)",
+        available: Boolean(ollamaStatus.available),
+        baseUrl: ollamaStatus.baseUrl,
+        error: ollamaStatus.error,
+        models: localModels
+      }
+    },
+    contentLimitChars,
+    maxPayloadContentChars,
+    sourceTypes: Object.keys(SOURCE_TYPE_LABELS),
+    counts: {
+      sessions: db.data.sessions.length,
+      nodes: db.data.nodes.length,
+      artifacts: db.data.artifacts.length,
+      workspaces: (db.data.workspaces ?? []).length
+    }
+  };
+}
+
+export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, staticDir = null } = {}) {
   if (!db) throw new Error("createApp requires a db instance");
 
   const app = express();
   const defaultJsonParser = express.json({ limit: "2mb" });
+  const enqueuePageSave = createSequentialTaskQueue();
+  const buildRequestLlmRuntime = (rawSelection) => ({
+    openaiClient,
+    ollamaBaseUrl,
+    llmProvider: resolveRequestLlmSelection(db, rawSelection)
+  });
   app.disable("x-powered-by");
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -2444,21 +3419,13 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
   });
 
   app.get("/api/health", async (req, res) => {
-    res.json({
-      ok: true,
-      app: "MindWeaver",
-      localOnly: true,
-      openaiConfigured: Boolean(openaiClient),
-      contentLimitChars: OPENAI_CONTENT_LIMIT,
-      maxPayloadContentChars: MAX_INGEST_CONTENT_CHARS,
-      sourceTypes: Object.keys(SOURCE_TYPE_LABELS),
-      counts: {
-        sessions: db.data.sessions.length,
-        nodes: db.data.nodes.length,
-        artifacts: db.data.artifacts.length,
-        workspaces: (db.data.workspaces ?? []).length
-      }
-    });
+    res.json(await buildHealthPayload({ db, openaiClient, ollamaBaseUrl }));
+  });
+
+  app.put("/api/settings/llm", async (req, res) => {
+    setStoredLlmSettings(db, req.body?.llmProvider ?? req.body ?? {});
+    await db.write();
+    res.json(await buildHealthPayload({ db, openaiClient, ollamaBaseUrl }));
   });
 
   app.get("/api/workspaces", async (req, res) => {
@@ -2529,14 +3496,26 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
   });
 
   app.put("/api/session-target", async (req, res) => {
-    const sessionId = req.body?.sessionId === null ? null : String(req.body?.sessionId ?? "").trim();
+    const hasSessionId = Object.prototype.hasOwnProperty.call(req.body ?? {}, "sessionId");
+    const sessionId = req.body?.sessionId === null ? null : String(req.body?.sessionId ?? "").trim() || null;
+    const hasOpenSessionIds = Array.isArray(req.body?.openSessionIds);
 
-    if (sessionId) {
-      const session = getSession(db, sessionId);
-      if (!session) return res.status(404).json({ error: "session not found" });
-      selectActiveSession(db, sessionId);
-    } else {
-      clearActiveSession(db);
+    if (hasOpenSessionIds) {
+      const preferences = repairSessionSelection(db);
+      preferences.openSessionIds = normalizeSessionIdList(
+        req.body.openSessionIds,
+        new Set(db.data.sessions.map((session) => session.id))
+      );
+    }
+
+    if (hasSessionId) {
+      if (sessionId) {
+        const session = getSession(db, sessionId);
+        if (!session) return res.status(404).json({ error: "session not found" });
+        selectActiveSession(db, sessionId);
+      } else {
+        clearActiveSession(db);
+      }
     }
 
     await db.write();
@@ -2670,32 +3649,37 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
   });
 
   app.post("/api/ingest", async (req, res) => {
-    const validation = validateIngestPayload(req.body);
+    const requestLlmSelection = resolveRequestLlmSelection(db, req.body?.llmProvider);
+    const validation = validateIngestPayload(req.body, { llmProvider: requestLlmSelection });
     if (!validation.ok) {
       return res.status(400).json({ ok: false, errors: validation.errors });
     }
 
-    const result = await ingestSource({
+    const result = await enqueuePageSave(() => ingestSource({
       db,
-      openaiClient,
+      llmRuntime: buildRequestLlmRuntime(requestLlmSelection),
       payload: {
         ...req.body,
         sourceType: "page"
       }
-    });
+    }));
 
     res.status(result.status).json(result.body);
   });
 
   app.post("/api/import", async (req, res) => {
-    const validation = validateIngestPayload(req.body, { allowSyntheticUrl: true });
+    const requestLlmSelection = resolveRequestLlmSelection(db, req.body?.llmProvider);
+    const validation = validateIngestPayload(req.body, {
+      allowSyntheticUrl: true,
+      llmProvider: requestLlmSelection
+    });
     if (!validation.ok) {
       return res.status(400).json({ ok: false, errors: validation.errors });
     }
 
     const result = await ingestSource({
       db,
-      openaiClient,
+      llmRuntime: buildRequestLlmRuntime(requestLlmSelection),
       payload: {
         ...req.body,
         sourceType: req.body.sourceType ?? "note"
@@ -2753,6 +3737,8 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
   app.post("/api/import-bulk", async (req, res) => {
     const sessionId = String(req.body?.sessionId ?? "").trim();
     const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 20) : [];
+    const requestLlmSelection = resolveRequestLlmSelection(db, req.body?.llmProvider);
+    const llmRuntime = buildRequestLlmRuntime(requestLlmSelection);
     if (!sessionId || !items.length) return res.status(400).json({ error: "sessionId and items[] required" });
     if (!getSession(db, sessionId)) return res.status(404).json({ error: "session not found" });
 
@@ -2766,12 +3752,15 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
         excerpt: String(item.content ?? "").slice(0, 280),
         content: item.content
       };
-      const validation = validateIngestPayload(payload, { allowSyntheticUrl: true });
+      const validation = validateIngestPayload(payload, {
+        allowSyntheticUrl: true,
+        llmProvider: requestLlmSelection
+      });
       if (!validation.ok) {
         results.push({ ok: false, index, errors: validation.errors });
         continue;
       }
-      const result = await ingestSource({ db, openaiClient, payload });
+      const result = await ingestSource({ db, llmRuntime, payload });
       results.push({ index, status: result.status, ...result.body });
     }
 
@@ -2821,11 +3810,10 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
     if (!sessionId || !question) return res.status(400).json({ error: "sessionId and question required" });
     const session = getSession(db, sessionId);
     if (!session) return res.status(404).json({ error: "session not found" });
+    const llmRuntime = buildRequestLlmRuntime(req.body?.llmProvider);
 
     const fallback = buildExtractiveAnswer(db, sessionId, question);
-    if (!openaiClient) return res.json(fallback);
-
-    const content = await requestText(openaiClient, {
+    const content = await requestText(llmRuntime, {
       model: "gpt-4o-mini",
       label: "Graph chat",
       timeoutMs: 15000,
@@ -2874,7 +3862,7 @@ ${fallback.citations.map((citation) => `- ${citation.label}: ${citation.snippet 
 
     const result = await refineSessionGraph({
       db,
-      openaiClient,
+      llmRuntime: buildRequestLlmRuntime(req.body?.llmProvider),
       sessionId
     });
 
@@ -2974,11 +3962,14 @@ ${fallback.citations.map((citation) => `- ${citation.label}: ${citation.snippet 
       summary: `Created manually as a ${type} node.`
     });
 
+    const automaticCleanup = applyAutomaticDuplicateCleanup(db, sessionId);
+    const visibleNode = resolveCanonicalSessionNode(db, sessionId, node.id, automaticCleanup) ?? node;
+
     await db.write();
     res.json({
       ok: true,
       goalCreated: Boolean(goal),
-      node: serializeNodeForSession(node, sessionId),
+      node: serializeNodeForSession(visibleNode, sessionId),
       graph: buildSessionGraph(db, sessionId)
     });
   });
@@ -3098,8 +4089,11 @@ ${fallback.citations.map((citation) => `- ${citation.label}: ${citation.snippet 
       sessionId,
       summary: "Edited manually in the inspector."
     });
+    const automaticCleanup = applyAutomaticDuplicateCleanup(db, sessionId);
+    const visibleNode = resolveCanonicalSessionNode(db, sessionId, node.id, automaticCleanup) ?? node;
+
     await db.write();
-    res.json({ ok: true, node: serializeNodeForSession(node, sessionId), graph: buildSessionGraph(db, sessionId) });
+    res.json({ ok: true, node: serializeNodeForSession(visibleNode, sessionId), graph: buildSessionGraph(db, sessionId) });
   });
 
   app.post("/api/nodes/:id/merge", async (req, res) => {
@@ -3132,39 +4126,39 @@ ${fallback.citations.map((citation) => `- ${citation.label}: ${citation.snippet 
     const knownConcepts = findVisibleSessionNodes(db, sessionId)
       .filter((node) => node.type === "concept")
       .map((node) => node.label);
+    const llmRuntime = buildRequestLlmRuntime(req.body?.llmProvider);
 
     let safeGapData = createFallbackGapResponse(goalNode.label, knownConcepts);
 
-    if (openaiClient) {
-      const gapData = await requestStructuredJson(openaiClient, {
-        model: "gpt-4o-mini",
-        label: "Gap analysis",
-        timeoutMs: 16000,
-        temperature: 0.2,
-        max_completion_tokens: 320,
-        messages: [
-          {
-            role: "system",
-            content: `${buildGraphContext(db)}
+    const gapData = await requestStructuredJson(llmRuntime, {
+      model: "gpt-4o-mini",
+      label: "Gap analysis",
+      timeoutMs: 16000,
+      temperature: 0.2,
+      max_completion_tokens: 320,
+      schema: STRUCTURED_RESPONSE_SCHEMAS.gapAnalysis,
+      messages: [
+        {
+          role: "system",
+          content: `${buildGraphContext(db)}
 
 Goal: "${goalNode.label}"
 Known concepts in this session: ${knownConcepts.join(", ") || "none"}
 
 Return only JSON: {"gaps":["concept1"],"pathway":["first step","second step"],"difficulty":"easy|medium|hard"}`
-          },
-          {
-            role: "user",
-            content: `What concepts are missing to reach the goal "${goalNode.label}"?`
-          }
-        ]
-      }).catch(() => null);
+        },
+        {
+          role: "user",
+          content: `What concepts are missing to reach the goal "${goalNode.label}"?`
+        }
+      ]
+    }).catch(() => null);
 
-      if (gapData) {
-        safeGapData = {
-          ...gapData,
-          recommendedActions: buildRecommendedActions(gapData)
-        };
-      }
+    if (gapData) {
+      safeGapData = {
+        ...gapData,
+        recommendedActions: buildRecommendedActions(gapData)
+      };
     }
 
     for (const gap of safeGapData.gaps ?? []) {
@@ -3193,6 +4187,7 @@ Return only JSON: {"gaps":["concept1"],"pathway":["first step","second step"],"d
   app.post("/api/quiz", async (req, res) => {
     const sessionId = String(req.body?.sessionId ?? "").trim();
     if (!sessionId) return res.status(400).json({ error: "sessionId required" });
+    const llmRuntime = buildRequestLlmRuntime(req.body?.llmProvider);
 
     const concepts = findVisibleSessionNodes(db, sessionId)
       .map((node) => serializeNodeForSession(node, sessionId))
@@ -3204,29 +4199,40 @@ Return only JSON: {"gaps":["concept1"],"pathway":["first step","second step"],"d
     if (concepts.length === 0) {
       return res.json({ quiz: [], message: "No review-worthy concepts in this session." });
     }
-
-    if (!openaiClient) {
-      return res.json({ quiz: [], message: "OpenAI is not configured, so quiz generation is unavailable." });
-    }
-
-    const quizData = await requestStructuredJson(openaiClient, {
+    const quizData = await requestStructuredJson(llmRuntime, {
       model: "gpt-4o-mini",
       label: "Quiz generation",
       timeoutMs: 18000,
       temperature: 0.2,
       max_completion_tokens: 480,
+      schema: STRUCTURED_RESPONSE_SCHEMAS.quizGeneration,
+      normalizeResult: (payload) => normalizeQuizGenerationPayload(payload, concepts.map((concept) => concept.label)),
       messages: [
         {
           role: "system",
           content: `Generate 1 multiple-choice question per concept from this exact list: ${concepts.map((concept) => `"${concept.label}"`).join(", ")}.
-Return only JSON: {"questions":[{"concept":"exact concept label","q":"question","options":["a","b","c","d"],"correct":0}]}`
+Return only JSON: {"questions":[{"concept":"exact concept label","q":"question","options":["a","b","c","d"],"correct":0}]}
+- Use the property name "q", not "question".
+- Keep "correct" as an integer 0-3.
+- Keep "correct" outside the options array.
+- Each options array must contain exactly 4 answer strings.
+- Do not wrap the response in a bare array.
+- Do not add markdown fences or commentary.`
         },
         {
           role: "user",
           content: `Create a short spaced-review quiz covering these concepts: ${concepts.map((concept) => concept.label).join(", ")}`
         }
       ]
-    }).catch(() => null);
+    }).catch((error) => {
+      if (error?.code === "LLM_UNAVAILABLE") {
+        res.json({ quiz: [], message: error.message });
+        return null;
+      }
+      return null;
+    });
+
+    if (res.headersSent) return;
 
     const questions = Array.isArray(quizData?.questions) ? quizData.questions : [];
     const conceptMap = new Map(concepts.map((concept) => [concept.label, concept.id]));
@@ -3248,6 +4254,7 @@ Return only JSON: {"questions":[{"concept":"exact concept label","q":"question",
 
     res.json({
       quiz,
+      message: quiz.length ? "" : "MindWeaver could not build a quiz right now.",
       concepts: concepts.map((concept) => ({ id: concept.id, label: concept.label }))
     });
   });
@@ -3307,20 +4314,14 @@ Return only JSON: {"questions":[{"concept":"exact concept label","q":"question",
     const node1 = db.data.nodes.find((node) => node.id === nodeId1);
     const node2 = db.data.nodes.find((node) => node.id === nodeId2);
     if (!node1 || !node2) return res.status(404).json({ error: "node not found" });
-
-    if (!openaiClient) {
-      return res.json({
-        bridge_concepts: [],
-        reasoning: `${node1.label} and ${node2.label} need OpenAI configured to generate bridge concepts.`
-      });
-    }
-
-    const result = await requestStructuredJson(openaiClient, {
+    const llmRuntime = buildRequestLlmRuntime(req.body?.llmProvider);
+    const result = await requestStructuredJson(llmRuntime, {
       model: "gpt-4o-mini",
       label: "Intersection discovery",
       timeoutMs: 15000,
       temperature: 0.2,
       max_completion_tokens: 220,
+      schema: STRUCTURED_RESPONSE_SCHEMAS.intersectionDiscovery,
       messages: [
         {
           role: "system",
@@ -3331,7 +4332,10 @@ Return only JSON: {"questions":[{"concept":"exact concept label","q":"question",
           content: `How do "${node1.label}" (${node1.type}) and "${node2.label}" (${node2.type}) relate?`
         }
       ]
-    }).catch(() => null);
+    }).catch((error) => ({
+      bridge_concepts: [],
+      reasoning: error?.message || `A bridge between ${node1.label} and ${node2.label} could not be generated right now.`
+    }));
 
     res.json(result ?? {
       bridge_concepts: [],
@@ -3348,14 +4352,8 @@ Return only JSON: {"questions":[{"concept":"exact concept label","q":"question",
     if (!label || !type) {
       return res.status(400).json({ error: "label and type required" });
     }
-
-    if (!openaiClient) {
-      return res.json({
-        content: `${label} is a ${type} in your graph. Upstream concepts: ${upstream.join(", ") || "none"}. Downstream concepts: ${downstream.join(", ") || "none"}.`
-      });
-    }
-
-    const content = await requestText(openaiClient, {
+    const llmRuntime = buildRequestLlmRuntime(req.body?.llmProvider);
+    const content = await requestText(llmRuntime, {
       model: "gpt-4o-mini",
       label: "Learn more",
       timeoutMs: 14000,
@@ -3372,7 +4370,7 @@ Briefly explain what it is, why it matters, and how it fits into the graph.`
     }).catch(() => null);
 
     res.json({
-      content: content ?? `A short explanation for ${label} could not be generated right now.`
+      content: content ?? `${label} is a ${type} in your graph. Upstream concepts: ${upstream.join(", ") || "none"}. Downstream concepts: ${downstream.join(", ") || "none"}.`
     });
   });
 

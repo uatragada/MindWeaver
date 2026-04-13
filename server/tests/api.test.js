@@ -6,6 +6,26 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { createDb, initDb } from "../db.js";
 import { createApp } from "../app.js";
+import { requestStructuredJson } from "../openai.js";
+
+function createClassificationSchema({ minConcepts = 1, maxConcepts = 8 } = {}) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["domain", "skill", "concepts"],
+    properties: {
+      domain: { type: "string", minLength: 1 },
+      skill: { type: "string", minLength: 1 },
+      concepts: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        minItems: minConcepts,
+        maxItems: maxConcepts,
+        uniqueItems: true
+      }
+    }
+  };
+}
 
 function createMockOpenAI() {
   return {
@@ -89,7 +109,7 @@ function createMockOpenAI() {
                 choices: [
                   {
                     message: {
-                      content: '{"domain":"distributed systems","skill":"message flow","concepts":["producer","broker","consumer","retry policy","consumer lag","dead letter queue","idempotency key","partition leader","delivery guarantee","backpressure"]}'
+                      content: '{"domain":"distributed systems","skill":"message flow","concepts":["producer","broker","consumer","retry policy","consumer lag","dead letter queue","idempotency key","partition leader"]}'
                     }
                   }
                 ]
@@ -134,6 +154,163 @@ function createMockOpenAI() {
   };
 }
 
+async function startMockOllamaServer(options = {}) {
+  const availableModels = Array.from(new Set(
+    (Array.isArray(options.models) ? options.models : ["qwen3.5:4b"])
+      .map((model) => String(model ?? "").trim())
+      .filter(Boolean)
+  ));
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const rawBody = Buffer.concat(chunks).toString("utf8");
+    const payload = rawBody ? JSON.parse(rawBody) : {};
+
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+
+    if (req.url === "/api/tags") {
+      res.end(JSON.stringify({
+        models: availableModels.map((name) => ({ name }))
+      }));
+      return;
+    }
+
+    if (req.url !== "/api/chat" || req.method !== "POST") {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: "not found" }));
+      return;
+    }
+
+    if (!availableModels.includes(payload.model)) {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: `model "${payload.model}" not found` }));
+      return;
+    }
+
+    requests.push({
+      method: req.method,
+      url: req.url,
+      payload
+    });
+
+    const prompt = Array.isArray(payload.messages)
+      ? payload.messages.map((message) => message.content).join("\n")
+      : "";
+
+    let content = "{}";
+
+    if (prompt.includes("Refine this MindWeaver map")) {
+      if (options.invalidRefineResponse) {
+        content = '{"summary":"broken refine","rename_nodes":[],"merge_nodes":[';
+      } else {
+      const marker = "Refine this MindWeaver map without deleting useful information unnecessarily.";
+      const markerIndex = prompt.indexOf(marker);
+      const jsonStart = markerIndex >= 0 ? prompt.indexOf("{", markerIndex) : -1;
+      let snapshot = {};
+      if (jsonStart >= 0) {
+        try {
+          snapshot = JSON.parse(prompt.slice(jsonStart));
+        } catch {
+          snapshot = {};
+        }
+      }
+      const nodes = Array.isArray(snapshot?.nodes) ? snapshot.nodes : [];
+      const edges = Array.isArray(snapshot?.edges) ? snapshot.edges : [];
+      const findNode = (label) => nodes.find((node) => String(node.label).toLowerCase() === label.toLowerCase());
+      const brokerNode = findNode("message brokers") ?? findNode("queue brokers") ?? findNode("queue broker") ?? findNode("message broker");
+      const queueNode = findNode("event queue");
+      const goalNode = nodes.find((node) => node.type === "goal") ?? null;
+      const goalToQueueEdge = goalNode && queueNode
+        ? edges.find((edge) => edge.source === goalNode.id && edge.target === queueNode.id)
+        : null;
+
+      content = JSON.stringify({
+        summary: "Tightened the hierarchy for the local-model path.",
+        rename_nodes: brokerNode ? [
+          {
+            id: brokerNode.id,
+            label: "message broker",
+            description: "Infrastructure that routes and buffers events between producers and consumers.",
+            type: "concept"
+          }
+        ] : [],
+        merge_nodes: brokerNode && queueNode ? [
+          {
+            sourceId: queueNode.id,
+            targetId: brokerNode.id,
+            reason: "These labels are redundant in this test fixture."
+          }
+        ] : [],
+        add_edges: [],
+        remove_edges: goalToQueueEdge ? [
+          {
+            key: goalToQueueEdge.key,
+            reason: "The duplicate queue node should not hang directly off the goal after merge."
+          }
+        ] : []
+      });
+      }
+    } else if (prompt.includes("should_ingest")) {
+      if (options.failLongPageStructuredPrompts && prompt.includes("Title: Long page source") && !prompt.includes("condensed excerpt from a longer source")) {
+        content = "This looks educational, but here is my prose analysis instead of JSON.";
+      } else {
+        content = '{"should_ingest":true,"reason":"substantive"}';
+      }
+    } else if (prompt.includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}')) {
+      if (options.failLongPageStructuredPrompts && prompt.includes("Title: Long page source") && !prompt.includes("condensed excerpt from a longer source")) {
+        content = "The page covers retries, idempotence, and distributed systems, but I am not returning valid JSON.";
+      } else if (options.requireFocusedLocalClassificationFallback && prompt.includes("Title: Focused fallback source")) {
+        content = prompt.includes("MIDDLE NOISE")
+          ? "I can explain this source, but I am still not returning valid JSON."
+          : '{"domain":"government","skill":"government structure","concepts":["federal republic","state governance","constitutional system"]}';
+      } else if (options.tooManyClassificationConcepts && prompt.includes("Title: Overlong concepts source")) {
+        content = '{"domain":"distributed systems","skill":"message flow","concepts":["producer","broker","consumer","retry policy","consumer lag","dead letter queue","idempotency key","partition leader","outbox pattern","offset commit"]}';
+      } else if (options.stringifiedClassificationConcepts && prompt.includes("Title: Stringified concepts source")) {
+        content = '{"domain":"distributed systems","skill":"message flow","concepts":"producer, broker, consumer, retry policy"}';
+      } else {
+        content = '{"domain":"distributed systems","skill":"delivery guarantees","concepts":["at least once delivery"]}';
+      }
+    } else if (prompt.includes('Return only JSON: {"directly_covered": ["concept1", "concept2"]}')) {
+      content = '{"directly_covered":["at least once delivery"]}';
+    } else if (prompt.includes('Return only JSON: {"gaps":["concept1"],"pathway":["first step","second step"],"difficulty":"easy|medium|hard"}')) {
+      content = '{"gaps":["idempotency"],"pathway":["review duplicate delivery","study idempotency keys"],"difficulty":"medium"}';
+    } else if (prompt.includes('Return only JSON: {"questions":[{"concept":"exact concept label","q":"question","options":["a","b","c","d"],"correct":0}]}')) {
+      content = options.malformedQuizResponse
+        ? '[{"concept":"at least once delivery","question":"What risk comes with at least once delivery?","options":["Duplicate deliveries","No retries","No acknowledgements","Single partition only"],"correct":"0"}]'
+        : '{"questions":[{"concept":"at least once delivery","q":"What risk comes with at least once delivery?","options":["Duplicate deliveries","No retries","No acknowledgements","Single partition only"],"correct":0}]}';
+    } else if (prompt.includes('Return only JSON: {"bridge_concepts":["concept1"],"reasoning":"..."}')) {
+      content = '{"bridge_concepts":["idempotency"],"reasoning":"Idempotency connects retries to safe consumer behavior."}';
+    } else if (prompt.includes("Answer only from the provided MindWeaver graph evidence")) {
+      content = "The graph shows that at least once delivery can retry messages and makes duplicate handling important.";
+    } else if (prompt.includes('Explain "')) {
+      content = "At least once delivery means a broker may redeliver a message until it is acknowledged, so consumers should be idempotent.";
+    }
+
+    res.end(JSON.stringify({
+      model: payload.model,
+      message: {
+        role: "assistant",
+        content
+      },
+      done: true
+    }));
+  });
+
+  await new Promise((resolve) => server.listen(0, resolve));
+  const { port } = server.address();
+
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    requests,
+    async close() {
+      await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  };
+}
+
 async function startTestServer(options = {}) {
   const tempDir = await mkdtemp(join(os.tmpdir(), "mindweaver-test-"));
   const dbPath = join(tempDir, "data.json");
@@ -142,7 +319,8 @@ async function startTestServer(options = {}) {
 
   const app = createApp({
     db,
-    openaiClient: createMockOpenAI(),
+    openaiClient: options.openaiClient === undefined ? createMockOpenAI() : options.openaiClient,
+    ollamaBaseUrl: options.ollamaBaseUrl,
     staticDir: options.staticDir ?? null
   });
 
@@ -242,25 +420,48 @@ test("shared session target API tracks the active map across create, switch, and
     assert.equal(initialTargetResponse.status, 200);
     assert.equal(initialTarget.activeSessionId, second.id);
     assert.equal(initialTarget.sessions.some((session) => session.id === second.id && session.isActiveTarget), true);
+    assert.deepEqual(initialTarget.tabSessions.map((session) => session.id), [first.id, second.id]);
+
+    const tabsOnlyResponse = await fetch(`${ctx.baseUrl}/api/session-target`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ openSessionIds: [second.id] })
+    });
+    const tabsOnly = await tabsOnlyResponse.json();
+    assert.equal(tabsOnlyResponse.status, 200);
+    assert.equal(tabsOnly.activeSessionId, second.id);
+    assert.deepEqual(tabsOnly.tabSessions.map((session) => session.id), [second.id]);
 
     const switchResponse = await fetch(`${ctx.baseUrl}/api/session-target`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: first.id })
+      body: JSON.stringify({ sessionId: first.id, openSessionIds: [second.id, first.id] })
     });
     const switched = await switchResponse.json();
     assert.equal(switchResponse.status, 200);
     assert.equal(switched.activeSessionId, first.id);
     assert.equal(switched.lastSessionId, first.id);
+    assert.deepEqual(switched.tabSessions.map((session) => session.id), [second.id, first.id]);
 
-    const endResponse = await fetch(`${ctx.baseUrl}/api/sessions/${first.id}/end`, { method: "POST" });
+    const closeActiveTabResponse = await fetch(`${ctx.baseUrl}/api/session-target`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: second.id, openSessionIds: [second.id] })
+    });
+    const closeActiveTab = await closeActiveTabResponse.json();
+    assert.equal(closeActiveTabResponse.status, 200);
+    assert.equal(closeActiveTab.activeSessionId, second.id);
+    assert.deepEqual(closeActiveTab.tabSessions.map((session) => session.id), [second.id]);
+
+    const endResponse = await fetch(`${ctx.baseUrl}/api/sessions/${second.id}/end`, { method: "POST" });
     assert.equal(endResponse.status, 200);
 
     const clearedResponse = await fetch(`${ctx.baseUrl}/api/session-target`);
     const cleared = await clearedResponse.json();
     assert.equal(clearedResponse.status, 200);
     assert.equal(cleared.activeSessionId, null);
-    assert.equal(cleared.lastSessionId, first.id);
+    assert.equal(cleared.lastSessionId, second.id);
+    assert.deepEqual(cleared.tabSessions.map((session) => session.id), [second.id]);
   } finally {
     await ctx.close();
   }
@@ -285,6 +486,461 @@ test("health endpoint allows chrome extension origins to reach the local API", a
     );
   } finally {
     await ctx.close();
+  }
+});
+
+test("requestStructuredJson accepts schema-valid local JSON responses", async () => {
+  const ollama = await startMockOllamaServer();
+
+  try {
+    const result = await requestStructuredJson({
+      openaiClient: null,
+      ollamaBaseUrl: ollama.baseUrl,
+      llmProvider: {
+        provider: "local",
+        model: "qwen3.5:4b"
+      }
+    }, {
+      label: "Local classification probe",
+      schema: createClassificationSchema(),
+      messages: [
+        {
+          role: "system",
+          content: 'Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}'
+        },
+        {
+          role: "user",
+          content: "Title: Local delivery note\nContent: At least once delivery retries a message until it is acknowledged, so duplicate handling matters."
+        }
+      ]
+    });
+
+    assert.deepEqual(result, {
+      domain: "distributed systems",
+      skill: "delivery guarantees",
+      concepts: ["at least once delivery"]
+    });
+  } finally {
+    await ollama.close();
+  }
+});
+
+test("requestStructuredJson rejects local JSON that fails schema validation", async () => {
+  const ollama = await startMockOllamaServer();
+
+  try {
+    await assert.rejects(
+      requestStructuredJson({
+        openaiClient: null,
+        ollamaBaseUrl: ollama.baseUrl,
+        llmProvider: {
+          provider: "local",
+          model: "qwen3.5:4b"
+        }
+      }, {
+        label: "Local classification probe",
+        schema: createClassificationSchema({ minConcepts: 2 }),
+        messages: [
+          {
+            role: "system",
+            content: 'Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}'
+          },
+          {
+            role: "user",
+            content: "Title: Local delivery note\nContent: At least once delivery retries a message until it is acknowledged, so duplicate handling matters."
+          }
+        ]
+      }),
+      (error) => {
+        assert.equal(error?.code, "LLM_SCHEMA_INVALID");
+        assert.match(error?.message ?? "", /Local classification probe did not match the expected schema/i);
+        assert.match(error?.message ?? "", /\$\.concepts/i);
+        return true;
+      }
+    );
+  } finally {
+    await ollama.close();
+  }
+});
+
+test("local LLM settings persist and power Ollama-backed tasks", async () => {
+  const ollama = await startMockOllamaServer({
+    models: ["qwen3.5:4b", "llama3.2:3b"]
+  });
+  const ctx = await startTestServer({
+    openaiClient: null,
+    ollamaBaseUrl: ollama.baseUrl
+  });
+
+  try {
+    const initialHealthResponse = await fetch(`${ctx.baseUrl}/api/health`);
+    const initialHealth = await initialHealthResponse.json();
+    assert.equal(initialHealthResponse.status, 200);
+    assert.equal(initialHealth.openaiConfigured, false);
+    assert.equal(initialHealth.llmProviders.local.available, true);
+    assert.equal(initialHealth.contentLimitChars, 16000);
+    assert.equal(initialHealth.maxPayloadContentChars, 80000);
+    assert.deepEqual(
+      initialHealth.llmProviders.local.models.map((model) => model.value).sort(),
+      ["llama3.2:3b", "qwen3.5:4b"]
+    );
+    assert.equal(initialHealth.llmProviders.local.models.every((model) => model.installed), true);
+    assert.equal(initialHealth.llmProviders.local.models.some((model) => model.value === "gemma4"), false);
+    assert.equal(initialHealth.llmSettings.provider, "openai");
+
+    const settingsResponse = await fetch(`${ctx.baseUrl}/api/settings/llm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "local", model: "llama3.2:3b" })
+    });
+    const settings = await settingsResponse.json();
+    assert.equal(settingsResponse.status, 200);
+    assert.equal(settings.llmSettings.provider, "local");
+    assert.equal(settings.llmSettings.localModel, "llama3.2:3b");
+    assert.equal(settings.contentLimitChars, 128000);
+    assert.equal(settings.maxPayloadContentChars, 128000);
+
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Reliable messaging map" })
+    });
+    const session = await sessionResponse.json();
+    assert.equal(sessionResponse.status, 200);
+
+    const importResponse = await fetch(`${ctx.baseUrl}/api/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        sourceType: "note",
+        title: "Local delivery note",
+        content: "At least once delivery retries a message until a consumer acknowledges it, which makes duplicate handling important. ".repeat(8)
+      })
+    });
+    const imported = await importResponse.json();
+    assert.equal(importResponse.status, 200);
+    assert.equal(imported.classification.domain, "distributed system");
+    assert.equal(imported.classification.skill, "delivery guarantee");
+    assert.deepEqual(imported.classification.concepts, ["at least once delivery"]);
+
+    const graphAfterImport = await (await fetch(`${ctx.baseUrl}/api/graph/${session.id}`)).json();
+    assert.equal(graphAfterImport.nodes.some((node) => node.label === "at least once delivery"), true);
+
+    const learnMoreResponse = await fetch(`${ctx.baseUrl}/api/learn-more`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        label: "at least once delivery",
+        type: "concept",
+        upstream: [],
+        downstream: []
+      })
+    });
+    const learnMore = await learnMoreResponse.json();
+    assert.equal(learnMoreResponse.status, 200);
+    assert.match(learnMore.content, /broker may redeliver/i);
+
+    const gapsResponse = await fetch(`${ctx.baseUrl}/api/gaps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        goalId: session.goalId
+      })
+    });
+    const gaps = await gapsResponse.json();
+    assert.equal(gapsResponse.status, 200);
+    assert.deepEqual(gaps.gaps, ["idempotency"]);
+
+    const quizResponse = await fetch(`${ctx.baseUrl}/api/quiz`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: session.id })
+    });
+    const quiz = await quizResponse.json();
+    assert.equal(quizResponse.status, 200);
+    assert.equal(quiz.quiz.length, 1);
+    assert.equal(quiz.quiz[0].concept, "at least once delivery");
+
+    const brokerResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "concept",
+        label: "queue brokers"
+      })
+    });
+    const brokerNode = (await brokerResponse.json()).node;
+
+    const queueResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "concept",
+        label: "event queue"
+      })
+    });
+    const queueNode = (await queueResponse.json()).node;
+
+    const refineResponse = await fetch(`${ctx.baseUrl}/api/refine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: session.id })
+    });
+    const refined = await refineResponse.json();
+    assert.equal(refineResponse.status, 200);
+    assert.equal(refined.ok, true);
+    assert.equal(refined.graph.nodes.some((node) => node.id === brokerNode.id && node.label === "message broker"), true);
+    assert.equal(refined.graph.nodes.some((node) => node.id === queueNode.id), false);
+
+    const chatResponse = await fetch(`${ctx.baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        question: "Why does this map care about duplicate handling?"
+      })
+    });
+    const chat = await chatResponse.json();
+    assert.equal(chatResponse.status, 200);
+    assert.match(chat.answer, /duplicate handling/i);
+
+    const getPrompt = (entry) => Array.isArray(entry?.payload?.messages)
+      ? entry.payload.messages.map((message) => message.content).join("\n")
+      : "";
+    const modelRequests = ollama.requests.filter((entry) => entry.url === "/api/chat");
+    const structuredRequests = ollama.requests.filter((entry) => entry.payload?.format);
+
+    assert.ok(structuredRequests.length >= 5);
+    assert.equal(modelRequests.length >= structuredRequests.length, true);
+    assert.equal(modelRequests.every((entry) => entry.payload.think === false), true);
+    assert.equal(structuredRequests.every((entry) => entry.payload.model === "llama3.2:3b"), true);
+
+    const worthinessRequest = structuredRequests.find((entry) => getPrompt(entry).includes('"should_ingest": true/false'));
+    assert.ok(worthinessRequest);
+    assert.deepEqual(worthinessRequest.payload.format.required, ["should_ingest", "reason"]);
+    assert.equal(worthinessRequest.payload.format.properties.should_ingest.type, "boolean");
+
+    const classificationRequest = structuredRequests.find((entry) => getPrompt(entry).includes("Classify this source into one domain, one skill, and 1-8 core concepts."));
+    assert.ok(classificationRequest);
+    assert.equal(classificationRequest.payload.format.additionalProperties, false);
+    assert.deepEqual(classificationRequest.payload.format.required, ["domain", "skill", "concepts"]);
+    assert.equal(classificationRequest.payload.format.properties.domain.type, "string");
+    assert.equal(classificationRequest.payload.format.properties.skill.type, "string");
+    assert.equal(classificationRequest.payload.format.properties.concepts.type, "array");
+    assert.equal(classificationRequest.payload.format.properties.concepts.items.type, "string");
+
+    const gapRequest = structuredRequests.find((entry) => getPrompt(entry).includes('"gaps":["concept1"],"pathway":["first step","second step"],"difficulty":"easy|medium|hard"}'));
+    assert.ok(gapRequest);
+    assert.deepEqual(gapRequest.payload.format.properties.difficulty.enum, ["easy", "medium", "hard"]);
+
+    const quizRequest = structuredRequests.find((entry) => getPrompt(entry).includes('"questions":[{"concept":"exact concept label","q":"question","options":["a","b","c","d"],"correct":0}]}'));
+    assert.ok(quizRequest);
+    assert.equal(quizRequest.payload.format.properties.questions.items.properties.correct.type, "integer");
+
+    const refineRequest = structuredRequests.find((entry) => getPrompt(entry).includes("Refine this MindWeaver map without deleting useful information unnecessarily."));
+    assert.ok(refineRequest);
+    assert.equal(refineRequest.payload.format.properties.rename_nodes.type, "array");
+  } finally {
+    await ctx.close();
+    await ollama.close();
+  }
+});
+
+test("local quiz repairs near-valid Ollama JSON before schema validation", async () => {
+  const ollama = await startMockOllamaServer({
+    malformedQuizResponse: true
+  });
+  const ctx = await startTestServer({
+    openaiClient: null,
+    ollamaBaseUrl: ollama.baseUrl
+  });
+
+  try {
+    await fetch(`${ctx.baseUrl}/api/settings/llm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "local", model: "qwen3.5:4b" })
+    });
+
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Reliable messaging map" })
+    });
+    const session = await sessionResponse.json();
+
+    await fetch(`${ctx.baseUrl}/api/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        sourceType: "note",
+        title: "Local delivery note",
+        content: "At least once delivery retries a message until a consumer acknowledges it, which makes duplicate handling important. ".repeat(6)
+      })
+    });
+
+    const quizResponse = await fetch(`${ctx.baseUrl}/api/quiz`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: session.id })
+    });
+    const quiz = await quizResponse.json();
+
+    assert.equal(quizResponse.status, 200);
+    assert.equal(quiz.quiz.length, 1);
+    assert.equal(quiz.quiz[0].concept, "at least once delivery");
+    assert.equal(quiz.quiz[0].correct, 0);
+    assert.match(quiz.quiz[0].q, /risk comes with at least once delivery/i);
+  } finally {
+    await ctx.close();
+    await ollama.close();
+  }
+});
+
+test("local refine splits larger cleanup passes into multiple Ollama requests", async () => {
+  const ollama = await startMockOllamaServer();
+  const ctx = await startTestServer({
+    openaiClient: null,
+    ollamaBaseUrl: ollama.baseUrl
+  });
+
+  try {
+    await fetch(`${ctx.baseUrl}/api/settings/llm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "local", model: "qwen3.5:4b" })
+    });
+
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Reliable messaging map" })
+    });
+    const session = await sessionResponse.json();
+
+    await fetch(`${ctx.baseUrl}/api/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        sourceType: "note",
+        title: "Local delivery note",
+        content: "At least once delivery retries a message until a consumer acknowledges it, which makes duplicate handling important. ".repeat(6)
+      })
+    });
+
+    for (const label of ["backpressure", "consumer lag", "event queue", "offset tracking", "partition ordering", "queue brokers", "retry budgets"]) {
+      await fetch(`${ctx.baseUrl}/api/nodes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: session.id,
+          type: "concept",
+          label
+        })
+      });
+    }
+
+    const refineResponse = await fetch(`${ctx.baseUrl}/api/refine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: session.id })
+    });
+    const refined = await refineResponse.json();
+
+    const refineRequests = ollama.requests.filter((entry) => {
+      const prompt = Array.isArray(entry?.payload?.messages)
+        ? entry.payload.messages.map((message) => message.content).join("\n")
+        : "";
+      return entry.payload?.format && prompt.includes("Refine this MindWeaver map without deleting useful information unnecessarily.");
+    });
+
+    assert.equal(refineResponse.status, 200);
+    assert.equal(refined.ok, true);
+    assert.equal(refined.graph.nodes.some((node) => node.label === "message broker"), true);
+    assert.ok(refineRequests.length >= 2);
+  } finally {
+    await ctx.close();
+    await ollama.close();
+  }
+});
+
+test("local refine falls back to conservative duplicate cleanup when Ollama refine JSON is invalid", async () => {
+  const ollama = await startMockOllamaServer({
+    invalidRefineResponse: true
+  });
+  const ctx = await startTestServer({
+    openaiClient: null,
+    ollamaBaseUrl: ollama.baseUrl
+  });
+
+  try {
+    await fetch(`${ctx.baseUrl}/api/settings/llm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "local", model: "qwen3.5:4b" })
+    });
+
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Reliable messaging map" })
+    });
+    const session = await sessionResponse.json();
+
+    ctx.db.data.nodes.push(
+      {
+        id: "concept:message-broker-a",
+        label: "message broker",
+        canonicalLabel: "message broker",
+        aliases: [],
+        type: "concept",
+        createdBy: "user",
+        verified: false,
+        confidence: 0.72,
+        createdAt: 1,
+        sessionIds: [session.id],
+        sessionReviews: {},
+        history: []
+      },
+      {
+        id: "concept:message-broker-b",
+        label: "message broker",
+        canonicalLabel: "message broker",
+        aliases: [],
+        type: "concept",
+        createdBy: "user",
+        verified: false,
+        confidence: 0.71,
+        createdAt: 2,
+        sessionIds: [session.id],
+        sessionReviews: {},
+        history: []
+      }
+    );
+    await ctx.db.write();
+
+    const refineResponse = await fetch(`${ctx.baseUrl}/api/refine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: session.id })
+    });
+    const refined = await refineResponse.json();
+
+    assert.equal(refineResponse.status, 200);
+    assert.equal(refined.ok, true);
+    assert.equal(refined.applied.merged >= 1, true);
+    assert.match(refined.summary, /conservative duplicate-label cleanup/i);
+    assert.match(refined.applied.warnings.join(" "), /conservative duplicate-label cleanup/i);
+    assert.equal(refined.graph.nodes.filter((node) => node.label === "message broker").length, 1);
+  } finally {
+    await ctx.close();
+    await ollama.close();
   }
 });
 
@@ -331,7 +987,140 @@ test("POST /api/ingest dedupes repeated URLs within a session", async () => {
   }
 });
 
-test("POST /api/ingest creates fresh nodes instead of reusing existing graph labels", async () => {
+test("POST /api/ingest queues concurrent page saves so later saves wait for the active one", async () => {
+  let releaseFirstClassification = null;
+  let firstClassificationStartedResolve = null;
+  const firstClassificationStarted = new Promise((resolve) => {
+    firstClassificationStartedResolve = resolve;
+  });
+  const classificationOrder = [];
+
+  const openaiClient = {
+    chat: {
+      completions: {
+        async create({ messages }) {
+          const prompt = messages.map((message) => message.content).join("\n");
+
+          if (prompt.includes("should_ingest")) {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: '{"should_ingest":true,"reason":"substantive"}'
+                  }
+                }
+              ]
+            };
+          }
+
+          if (prompt.includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}')) {
+            if (prompt.includes("Title: First queued source")) {
+              classificationOrder.push("first-start");
+              firstClassificationStartedResolve?.();
+              await new Promise((resolve) => {
+                releaseFirstClassification = resolve;
+              });
+              classificationOrder.push("first-end");
+              return {
+                choices: [
+                  {
+                    message: {
+                      content: '{"domain":"distributed systems","skill":"message flow","concepts":["first queue item"]}'
+                    }
+                  }
+                ]
+              };
+            }
+
+            if (prompt.includes("Title: Second queued source")) {
+              classificationOrder.push("second-start");
+              classificationOrder.push("second-end");
+              return {
+                choices: [
+                  {
+                    message: {
+                      content: '{"domain":"distributed systems","skill":"message flow","concepts":["second queue item"]}'
+                    }
+                  }
+                ]
+              };
+            }
+          }
+
+          return {
+            choices: [
+              {
+                message: {
+                  content: "{}"
+                }
+              }
+            ]
+          };
+        }
+      }
+    }
+  };
+
+  const ctx = await startTestServer({ openaiClient });
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Queued page saves" })
+    });
+    const session = await sessionResponse.json();
+
+    const firstRequest = fetch(`${ctx.baseUrl}/api/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        url: "https://example.com/queued-first",
+        title: "First queued source",
+        excerpt: "First queued page.",
+        content: "First queued page content about distributed systems, retries, acknowledgements, and safe message handling. ".repeat(4)
+      })
+    });
+
+    await firstClassificationStarted;
+
+    const secondRequest = fetch(`${ctx.baseUrl}/api/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        url: "https://example.com/queued-second",
+        title: "Second queued source",
+        excerpt: "Second queued page.",
+        content: "Second queued page content about distributed systems, retries, acknowledgements, and safe message handling. ".repeat(4)
+      })
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(classificationOrder, ["first-start"]);
+
+    releaseFirstClassification?.();
+
+    const [firstResponse, secondResponse] = await Promise.all([firstRequest, secondRequest]);
+    const [firstBody, secondBody] = await Promise.all([firstResponse.json(), secondResponse.json()]);
+
+    assert.equal(firstResponse.status, 200);
+    assert.equal(secondResponse.status, 200);
+    assert.equal(firstBody.deduped, false);
+    assert.equal(secondBody.deduped, false);
+    assert.deepEqual(classificationOrder, ["first-start", "first-end", "second-start", "second-end"]);
+    assert.deepEqual(
+      ctx.db.data.artifacts.map((artifact) => artifact.title),
+      ["First queued source", "Second queued source"]
+    );
+  } finally {
+    releaseFirstClassification?.();
+    await ctx.close();
+  }
+});
+
+test("POST /api/ingest collapses exact duplicate labels after repeated saves", async () => {
   const ctx = await startTestServer();
 
   try {
@@ -374,9 +1163,9 @@ test("POST /api/ingest creates fresh nodes instead of reusing existing graph lab
     const javascriptNodes = graph.nodes.filter((node) => node.label === "javascript");
 
     assert.equal(graphResponse.status, 200);
-    assert.equal(closureNodes.length, 2);
-    assert.equal(new Set(closureNodes.map((node) => node.id)).size, 2);
-    assert.equal(javascriptNodes.length, 2);
+    assert.equal(closureNodes.length, 1);
+    assert.equal(javascriptNodes.length, 1);
+    assert.equal(closureNodes[0]?.evidenceCount, 2);
   } finally {
     await ctx.close();
   }
@@ -415,6 +1204,250 @@ test("POST /api/ingest keeps at most 8 concepts from the classification pass", a
     assert.equal(graph.nodes.filter((node) => node.type === "concept").length, 8);
   } finally {
     await ctx.close();
+  }
+});
+
+test("local imports accept content beyond the OpenAI payload cap", async () => {
+  const ollama = await startMockOllamaServer();
+  const ctx = await startTestServer({
+    openaiClient: null,
+    ollamaBaseUrl: ollama.baseUrl
+  });
+
+  try {
+    const settingsResponse = await fetch(`${ctx.baseUrl}/api/settings/llm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "local", model: "qwen3.5:4b" })
+    });
+    assert.equal(settingsResponse.status, 200);
+
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Long local import map" })
+    });
+    const session = await sessionResponse.json();
+
+    const longContent = Array.from(
+      { length: 700 },
+      (_, index) => `Section ${index}: at least once delivery, idempotency keys, retry policies, dead letter queues, and consumer lag matter in message broker systems.`
+    ).join(" ");
+    assert.equal(longContent.length > 80000 && longContent.length <= 128000, true);
+
+    const importResponse = await fetch(`${ctx.baseUrl}/api/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        sourceType: "note",
+        title: "Large local note",
+        content: longContent
+      })
+    });
+    const imported = await importResponse.json();
+
+    assert.equal(importResponse.status, 200);
+    assert.equal(imported.ok, true);
+    assert.deepEqual(imported.classification, {
+      domain: "distributed system",
+      skill: "delivery guarantee",
+      concepts: ["at least once delivery"]
+    });
+  } finally {
+    await ctx.close();
+    await ollama.close();
+  }
+});
+
+test("local ingest retries long structured page analysis with condensed content when full-page JSON fails", async () => {
+  const ollama = await startMockOllamaServer({
+    failLongPageStructuredPrompts: true
+  });
+  const ctx = await startTestServer({
+    openaiClient: null,
+    ollamaBaseUrl: ollama.baseUrl
+  });
+
+  try {
+    await fetch(`${ctx.baseUrl}/api/settings/llm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "local", model: "qwen3.5:4b" })
+    });
+
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Long page ingest map" })
+    });
+    const session = await sessionResponse.json();
+
+    const ingestResponse = await fetch(`${ctx.baseUrl}/api/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        url: "https://example.com/long-page",
+        title: "Long page source",
+        excerpt: "A long page about retries and idempotency.",
+        content: "At least once delivery, retries, idempotency keys, and dead-letter queues are all important in distributed systems. ".repeat(180)
+      })
+    });
+    const ingested = await ingestResponse.json();
+
+    const getPrompt = (entry) => Array.isArray(entry?.payload?.messages)
+      ? entry.payload.messages.map((message) => message.content).join("\n")
+      : "";
+    const worthinessPrompts = ollama.requests
+      .filter((entry) => getPrompt(entry).includes("Title: Long page source"))
+      .filter((entry) => getPrompt(entry).includes("should_ingest"));
+    const classificationPrompts = ollama.requests
+      .filter((entry) => getPrompt(entry).includes("Title: Long page source"))
+      .filter((entry) => getPrompt(entry).includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}'));
+
+    assert.equal(ingestResponse.status, 200);
+    assert.deepEqual(ingested.classification, {
+      domain: "distributed system",
+      skill: "delivery guarantee",
+      concepts: ["at least once delivery"]
+    });
+    assert.equal(worthinessPrompts.length, 2);
+    assert.equal(classificationPrompts.length, 2);
+    assert.equal(
+      worthinessPrompts.some((entry) => getPrompt(entry).includes("condensed excerpt from a longer source")),
+      true
+    );
+    assert.equal(
+      classificationPrompts.some((entry) => getPrompt(entry).includes("condensed excerpt from a longer source")),
+      true
+    );
+  } finally {
+    await ctx.close();
+    await ollama.close();
+  }
+});
+
+test("local ingest falls back to a focused lead excerpt when broader local classification attempts stay invalid", async () => {
+  const ollama = await startMockOllamaServer({
+    requireFocusedLocalClassificationFallback: true
+  });
+  const ctx = await startTestServer({
+    openaiClient: null,
+    ollamaBaseUrl: ollama.baseUrl
+  });
+
+  try {
+    await fetch(`${ctx.baseUrl}/api/settings/llm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "local", model: "qwen3.5:4b" })
+    });
+
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Focused fallback map" })
+    });
+    const session = await sessionResponse.json();
+
+    const longContent = [
+      "The source explains how a federal republic divides powers between national and state governments.",
+      "It introduces constitutions, representative institutions, and state governance responsibilities.",
+      "MIDDLE NOISE ".repeat(900)
+    ].join(" ");
+
+    const ingestResponse = await fetch(`${ctx.baseUrl}/api/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        url: "https://example.com/focused-fallback",
+        title: "Focused fallback source",
+        excerpt: "The source explains how a federal republic divides powers between national and state governments.",
+        content: longContent
+      })
+    });
+    const ingested = await ingestResponse.json();
+    const getPrompt = (entry) => Array.isArray(entry?.payload?.messages)
+      ? entry.payload.messages.map((message) => message.content).join("\n")
+      : "";
+
+    const classificationPrompts = ollama.requests
+      .filter((entry) => getPrompt(entry).includes("Title: Focused fallback source"))
+      .filter((entry) => getPrompt(entry).includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}'));
+
+    assert.equal(ingestResponse.status, 200);
+    assert.equal(ingested.classification.domain, "government");
+    assert.equal(ingested.classification.skill, "government structure");
+    assert.deepEqual(ingested.classification.concepts, [
+      "federal republic",
+      "state governance",
+      "constitutional system"
+    ]);
+    assert.equal(classificationPrompts.length >= 3, true);
+    assert.equal(getPrompt(classificationPrompts[0]).includes("MIDDLE NOISE"), true);
+    assert.equal(getPrompt(classificationPrompts[1]).includes("MIDDLE NOISE"), true);
+    assert.equal(getPrompt(classificationPrompts.at(-1)).includes("MIDDLE NOISE"), false);
+  } finally {
+    await ctx.close();
+    await ollama.close();
+  }
+});
+
+test("local ingest trims overlong concept lists before schema validation", async () => {
+  const ollama = await startMockOllamaServer({
+    tooManyClassificationConcepts: true
+  });
+  const ctx = await startTestServer({
+    openaiClient: null,
+    ollamaBaseUrl: ollama.baseUrl
+  });
+
+  try {
+    await fetch(`${ctx.baseUrl}/api/settings/llm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "local", model: "qwen3.5:4b" })
+    });
+
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Overlong concepts map" })
+    });
+    const session = await sessionResponse.json();
+
+    const ingestResponse = await fetch(`${ctx.baseUrl}/api/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        url: "https://example.com/overlong-concepts",
+        title: "Overlong concepts source",
+        excerpt: "A source with too many concepts.",
+        content: "Producers, brokers, consumers, retries, dead-letter queues, and idempotency keys all matter in distributed systems. ".repeat(40)
+      })
+    });
+    const ingested = await ingestResponse.json();
+
+    assert.equal(ingestResponse.status, 200);
+    assert.equal(ingested.classification.domain, "distributed system");
+    assert.equal(ingested.classification.skill, "message flow");
+    assert.equal(ingested.classification.concepts.length, 8);
+    assert.deepEqual(ingested.classification.concepts, [
+      "producer",
+      "broker",
+      "consumer",
+      "retry policy",
+      "consumer lag",
+      "dead letter queue",
+      "idempotency key",
+      "partition leader"
+    ]);
+  } finally {
+    await ctx.close();
+    await ollama.close();
   }
 });
 
@@ -717,6 +1750,58 @@ test("POST /api/nodes can create a primary goal node for a map that started unna
   }
 });
 
+test("PATCH /api/nodes/:id returns the surviving node after an exact-label merge", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Deduped editing map" })
+    });
+    const session = await sessionResponse.json();
+
+    const firstNodeResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "concept",
+        label: "closure"
+      })
+    });
+    const firstNode = (await firstNodeResponse.json()).node;
+
+    const secondNodeResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "concept",
+        label: "lexical scope"
+      })
+    });
+    const secondNode = (await secondNodeResponse.json()).node;
+
+    const updateResponse = await fetch(`${ctx.baseUrl}/api/nodes/${encodeURIComponent(secondNode.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        label: "closure"
+      })
+    });
+    const updated = await updateResponse.json();
+
+    assert.equal(updateResponse.status, 200);
+    assert.equal(updated.node.id, firstNode.id);
+    assert.equal(updated.node.label, "closure");
+    assert.equal(updated.graph.nodes.filter((node) => node.label === "closure" && node.type === "concept").length, 1);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test("POST /api/refine renames, merges, and cleans weak edges conservatively", async () => {
   const ctx = await startTestServer();
 
@@ -883,6 +1968,7 @@ test("product endpoints expose health, recent sessions, and local deletion", asy
     assert.equal(health.ok, true);
     assert.equal(health.openaiConfigured, true);
     assert.equal(health.contentLimitChars, 16000);
+    assert.equal(health.maxPayloadContentChars, 80000);
 
     const sessionsResponse = await fetch(`${ctx.baseUrl}/api/sessions`);
     const sessionsBody = await sessionsResponse.json();
@@ -999,6 +2085,11 @@ test("remaining roadmap endpoints support progress, search, chat, summaries, pru
     assert.equal(searchResponse.status, 200);
     assert.equal(search.results.some((result) => result.label.includes("producer")), true);
 
+    const naturalLanguageSearchResponse = await fetch(`${ctx.baseUrl}/api/search/${demo.id}?q=${encodeURIComponent("What should I study about producers?")}`);
+    const naturalLanguageSearch = await naturalLanguageSearchResponse.json();
+    assert.equal(naturalLanguageSearchResponse.status, 200);
+    assert.equal(naturalLanguageSearch.results.some((result) => result.label.includes("producer")), true);
+
     const chatResponse = await fetch(`${ctx.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1008,6 +2099,7 @@ test("remaining roadmap endpoints support progress, search, chat, summaries, pru
     assert.equal(chatResponse.status, 200);
     assert.ok(chat.answer);
     assert.ok(Array.isArray(chat.citations));
+    assert.ok(chat.citations.length > 0);
 
     const summaryResponse = await fetch(`${ctx.baseUrl}/api/summary/${demo.id}`);
     const summary = await summaryResponse.json();

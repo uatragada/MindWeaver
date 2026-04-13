@@ -1,10 +1,11 @@
 import { createMindWeaverClient } from "./lib/mindweaver-client.js";
 
+const AUTO_CAPTURE_ENABLED_STORAGE_KEY = "mindweaverAutoCaptureEnabled";
 const statusEl = document.getElementById("status");
 const workspaceEl = document.getElementById("workspace");
 const targetEl = document.getElementById("target");
 const createBtn = document.getElementById("create");
-const endBtn = document.getElementById("end");
+const autoCaptureBtn = document.getElementById("autoCapture");
 const captureBtn = document.getElementById("capture");
 const goalEl = document.getElementById("goal");
 const openBtn = document.getElementById("open");
@@ -31,6 +32,7 @@ function getCaptureErrorMessage(error) {
 
 async function getCaptureState() {
   return await chrome.storage.local.get([
+    AUTO_CAPTURE_ENABLED_STORAGE_KEY,
     "lastCaptureAt",
     "lastCaptureTitle",
     "lastCaptureStatus",
@@ -47,8 +49,21 @@ async function clearDeletedCaptureTarget() {
   });
 }
 
+async function setAutoCaptureEnabled(enabled) {
+  await chrome.storage.local.set({
+    [AUTO_CAPTURE_ENABLED_STORAGE_KEY]: Boolean(enabled)
+  });
+}
+
+function renderAutoCaptureButton(enabled) {
+  autoCaptureBtn.textContent = `Continuous Save: ${enabled ? "On" : "Off"}`;
+  autoCaptureBtn.classList.toggle("toggle-on", enabled);
+  autoCaptureBtn.classList.toggle("toggle-off", !enabled);
+  autoCaptureBtn.setAttribute("aria-pressed", String(enabled));
+}
+
 function renderTargetOptions(targetState) {
-  const sessions = targetState.sessions ?? [];
+  const sessions = targetState.tabSessions ?? targetState.sessions ?? [];
   const activeSessionId = targetState.activeSessionId ?? "";
   targetEl.innerHTML = "";
 
@@ -75,16 +90,17 @@ async function refreshUI() {
   currentTargetState = targetState;
 
   renderTargetOptions(targetState);
+  const visibleSessions = targetState.tabSessions ?? targetState.sessions ?? [];
   const workspaceName = targetState.workspaces?.[0]?.name || "Personal Learning";
   const activeLabel = getMapName(targetState.activeSession, "No active map selected");
   const lastLabel = getMapName(targetState.lastSession, "None yet");
-  const validSessionIds = new Set((targetState.sessions ?? []).map((session) => session.id));
+  const validSessionIds = new Set(visibleSessions.map((session) => session.id));
   if (targetState.activeSessionId) validSessionIds.add(targetState.activeSessionId);
   if (targetState.lastSessionId) validSessionIds.add(targetState.lastSessionId);
   const captureTargetStillExists = captureState.lastCaptureTargetId
     ? validSessionIds.has(captureState.lastCaptureTargetId)
     : (captureState.lastCaptureTarget
-      ? (targetState.sessions ?? []).some((session) => getMapName(session) === captureState.lastCaptureTarget)
+      ? visibleSessions.some((session) => getMapName(session) === captureState.lastCaptureTarget)
       : true);
 
   if (!captureTargetStillExists && (captureState.lastCaptureTarget || captureState.lastCaptureTargetId)) {
@@ -94,9 +110,9 @@ async function refreshUI() {
   }
 
   statusEl.textContent = activeLabel;
-  workspaceEl.textContent = `${workspaceName} • Last used ${lastLabel}`;
-  endBtn.disabled = !targetState.activeSessionId;
+  workspaceEl.textContent = `${workspaceName} • Last used ${lastLabel}${captureState[AUTO_CAPTURE_ENABLED_STORAGE_KEY] ? " • Continuous save on" : ""}`;
   captureBtn.disabled = false;
+  renderAutoCaptureButton(Boolean(captureState[AUTO_CAPTURE_ENABLED_STORAGE_KEY]));
   lastCaptureEl.textContent = captureState.lastCaptureAt
     ? `${titleCaseStatus(captureState.lastCaptureStatus || "saved")} • ${captureState.lastCaptureTitle || captureState.lastCaptureMessage || new Date(captureState.lastCaptureAt).toLocaleTimeString()}${captureState.lastCaptureTarget ? ` (${captureState.lastCaptureTarget})` : ""}`
     : "None yet";
@@ -160,22 +176,22 @@ createBtn.addEventListener("click", async () => {
   }
 });
 
-endBtn.addEventListener("click", async () => {
-  const activeSessionId = currentTargetState?.activeSessionId;
-  if (!activeSessionId) return;
-
-  endBtn.disabled = true;
-  endBtn.textContent = "Ending...";
+autoCaptureBtn.addEventListener("click", async () => {
+  autoCaptureBtn.disabled = true;
 
   try {
-    await client.fetchJson(`/api/sessions/${encodeURIComponent(activeSessionId)}/end`, { method: "POST" });
+    const captureState = await getCaptureState();
+    const nextEnabled = !captureState[AUTO_CAPTURE_ENABLED_STORAGE_KEY];
+    if (nextEnabled) {
+      await ensureActiveTarget();
+    }
+    await setAutoCaptureEnabled(nextEnabled);
     await refreshUI();
   } catch (error) {
-    console.error("Failed to end session:", error);
-    alert(`Could not end the active map. ${error.message}`);
+    console.error("Failed to update continuous save:", error);
+    alert(`Could not update continuous save. ${error.message}`);
   } finally {
-    endBtn.disabled = false;
-    endBtn.textContent = "End Active Map";
+    autoCaptureBtn.disabled = false;
   }
 });
 

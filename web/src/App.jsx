@@ -8,16 +8,18 @@ import { useSessionRoute } from "./hooks/useSessionRoute.js";
 import { API_BASE, fetchJson } from "./lib/api.js";
 import {
   CHAT_IMPORT_PROVIDER_OPTIONS,
+  DEFAULT_LLM_PROVIDER,
+  DEFAULT_LOCAL_LLM_MODEL,
   DEFAULT_TAB_VIEW,
   EMPTY_IMPORT_FORM,
   EMPTY_QUIZ_STATE,
+  LLM_PROVIDER_OPTIONS,
+  LOCAL_LLM_MODEL_OPTIONS,
   MASTERY_OPTIONS,
   NODE_TYPE_OPTIONS,
-  OPEN_TABS_STORAGE_KEY,
   RELATIONSHIP_TYPE_OPTIONS,
   RIGHT_PANEL_LABELS,
   SOURCE_TYPE_OPTIONS,
-  STATS_REFRESH_MS,
   TAB_VIEW_STORAGE_KEY,
   visibleNodeTypes
 } from "./lib/app-constants.js";
@@ -25,8 +27,12 @@ import { getChatHistoryImportPreview } from "./lib/chat-import-preview.js";
 import {
   createNodeCollisionForce,
   drawRoundedRect,
+  getChargeStrength,
+  getLinkDistance,
+  getLinkVisualStyle,
   getNodeMetrics,
-  NODE_HIERARCHY_LEVELS
+  NODE_HIERARCHY_LEVELS,
+  NODE_TYPE_LEGEND
 } from "./lib/graph-rendering.js";
 import {
   describeReviewDate,
@@ -51,6 +57,10 @@ export default function App() {
 
   const [graphState, setGraphState] = useState(null);
   const [healthState, setHealthState] = useState(null);
+  const [llmSettings, setLlmSettings] = useState({
+    provider: DEFAULT_LLM_PROVIDER,
+    localModel: DEFAULT_LOCAL_LLM_MODEL
+  });
   const [recentSessions, setRecentSessions] = useState([]);
   const [sessionTargetState, setSessionTargetState] = useState({
     activeSessionId: null,
@@ -58,9 +68,10 @@ export default function App() {
     activeSession: null,
     lastSession: null,
     sessions: [],
+    tabSessions: [],
     workspaces: []
   });
-  const [openTabs, setOpenTabs] = useLocalStorageState(OPEN_TABS_STORAGE_KEY, []);
+  const [openTabs, setOpenTabs] = useState([]);
   const [tabViewState, setTabViewState] = useLocalStorageState(TAB_VIEW_STORAGE_KEY, {});
   const [sessionCache, setSessionCache] = useState({});
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -70,6 +81,7 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [homeErrorMessage, setHomeErrorMessage] = useState("");
+  const [isSavingLlmSettings, setIsSavingLlmSettings] = useState(false);
   const [isLoadingGraph, setIsLoadingGraph] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [isCreatingGoalNode, setIsCreatingGoalNode] = useState(false);
@@ -154,16 +166,18 @@ export default function App() {
       activeSession: targetState?.activeSession ?? null,
       lastSession: targetState?.lastSession ?? null,
       sessions: targetState?.sessions ?? [],
+      tabSessions: targetState?.tabSessions ?? [],
       workspaces: targetState?.workspaces ?? []
     };
     const validSessionIds = new Set(normalizedState.sessions.map((session) => session.id));
+    for (const session of normalizedState.tabSessions) validSessionIds.add(session.id);
     if (normalizedState.activeSessionId) validSessionIds.add(normalizedState.activeSessionId);
     if (normalizedState.lastSessionId) validSessionIds.add(normalizedState.lastSessionId);
     if (preserveSessionId) validSessionIds.add(preserveSessionId);
 
     setRecentSessions(normalizedState.sessions);
     setSessionTargetState(normalizedState);
-    setOpenTabs((current) => current.filter((entry) => validSessionIds.has(entry)));
+    setOpenTabs(normalizedState.tabSessions.map((session) => session.id).filter((entry) => validSessionIds.has(entry)));
     setTabViewState((current) => Object.fromEntries(
       Object.entries(current).filter(([entry]) => validSessionIds.has(entry))
     ));
@@ -189,24 +203,61 @@ export default function App() {
     }
   }, [applyTargetStateSnapshot, sessionId]);
 
-  const syncActiveSessionTarget = useCallback(async (nextSessionId) => {
+  const syncSessionTargetState = useCallback(async ({ nextSessionId, openSessionIds, preserveSessionId = null } = {}) => {
+    const body = { limit: 24 };
+    if (openSessionIds) {
+      body.openSessionIds = openSessionIds;
+    }
+    if (nextSessionId !== undefined) {
+      body.sessionId = nextSessionId ?? null;
+    }
+
     const targetState = await fetchJson(`${API_BASE}/api/session-target`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: nextSessionId ?? null, limit: 24 })
+      body: JSON.stringify(body)
     });
-    applyTargetStateSnapshot(targetState, { preserveSessionId: nextSessionId ?? sessionId ?? null });
+    applyTargetStateSnapshot(targetState, { preserveSessionId: preserveSessionId ?? nextSessionId ?? sessionId ?? null });
     return targetState;
   }, [applyTargetStateSnapshot, sessionId]);
 
   useEffect(() => {
     void loadHomeData();
-    const intervalId = window.setInterval(() => {
-      void loadHomeData();
-    }, STATS_REFRESH_MS);
-
-    return () => window.clearInterval(intervalId);
   }, [loadHomeData]);
+
+  useEffect(() => {
+    const nextSettings = healthState?.llmSettings;
+    if (!nextSettings) return;
+
+    setLlmSettings({
+      provider: nextSettings.provider === "local" ? "local" : DEFAULT_LLM_PROVIDER,
+      localModel: nextSettings.localModel || DEFAULT_LOCAL_LLM_MODEL
+    });
+  }, [healthState?.llmSettings?.localModel, healthState?.llmSettings?.provider]);
+
+  const updateLlmSettings = useCallback(async (nextSettings) => {
+    setLlmSettings(nextSettings);
+    setHomeErrorMessage("");
+    setIsSavingLlmSettings(true);
+
+    try {
+      const nextHealth = await fetchJson(`${API_BASE}/api/settings/llm`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: nextSettings.provider,
+          model: nextSettings.localModel
+        })
+      });
+      setHealthState(nextHealth);
+    } catch (error) {
+      setHomeErrorMessage(error.message);
+      const nextHealth = await fetchJson(`${API_BASE}/api/health`).catch(() => null);
+      if (nextHealth) setHealthState(nextHealth);
+    } finally {
+      setIsSavingLlmSettings(false);
+    }
+  }, []);
 
   const openSessionTab = useCallback((nextSessionId) => {
     if (!nextSessionId) return;
@@ -230,23 +281,47 @@ export default function App() {
       return next;
     });
 
-    if (closingSessionId !== sessionId) return;
+    if (closingSessionId !== sessionId) {
+      void syncSessionTargetState({
+        openSessionIds: remainingTabs,
+        preserveSessionId: sessionId ?? null
+      }).catch(() => {
+        // A failed sync should not block closing a non-active tab inside the local app.
+      });
+      return;
+    }
 
     const closingIndex = openTabs.indexOf(closingSessionId);
     const fallbackSessionId = remainingTabs[closingIndex] ?? remainingTabs[closingIndex - 1] ?? null;
+    if (!fallbackSessionId) {
+      void syncSessionTargetState({
+        nextSessionId: null,
+        openSessionIds: remainingTabs,
+        preserveSessionId: null
+      }).catch(() => {
+        // A failed sync should not block closing the final tab inside the local app.
+      });
+    }
     startTransition(() => {
       navigateToSession(fallbackSessionId);
     });
-  }, [navigateToSession, openTabs, sessionId, setOpenTabs, setTabViewState]);
+  }, [navigateToSession, openTabs, sessionId, setTabViewState, syncSessionTargetState]);
 
   useEffect(() => {
     if (!sessionId) return;
 
-    setOpenTabs((current) => (current.includes(sessionId) ? current : [...current, sessionId]));
-    void syncActiveSessionTarget(sessionId).catch(() => {
+    const nextOpenTabs = openTabs.includes(sessionId) ? openTabs : [...openTabs, sessionId];
+    if (nextOpenTabs !== openTabs) {
+      setOpenTabs(nextOpenTabs);
+    }
+
+    void syncSessionTargetState({
+      nextSessionId: sessionId,
+      openSessionIds: nextOpenTabs
+    }).catch(() => {
       // A failed sync should not block switching tabs inside the local app.
     });
-  }, [sessionId, setOpenTabs, syncActiveSessionTarget]);
+  }, [sessionId, syncSessionTargetState]);
 
   useLayoutEffect(() => {
     const element = graphContainerRef.current;
@@ -446,15 +521,17 @@ export default function App() {
   }, [applyTargetStateSnapshot, dropSessionLocally, navigateToSession, sessionId]);
 
   useEffect(() => {
-    if (!sessionId) return undefined;
-
+    if (!sessionId) return;
     void loadGraph(sessionId);
-    const intervalId = window.setInterval(() => {
-      void loadGraph(sessionId);
-    }, STATS_REFRESH_MS);
-
-    return () => window.clearInterval(intervalId);
   }, [loadGraph, sessionId]);
+
+  const handleRefreshGraph = useCallback(async () => {
+    if (!sessionId) return;
+    await Promise.all([
+      loadHomeData(),
+      loadGraph(sessionId)
+    ]);
+  }, [loadGraph, loadHomeData, sessionId]);
 
   const handleCreateSession = async (event, { fromTabs = false } = {}) => {
     event?.preventDefault?.();
@@ -803,14 +880,65 @@ export default function App() {
     return `${nodeIds.join("|")}::${linkKeys.join("|")}`;
   }, [graphData.links, graphData.nodes]);
 
-  const maxImportChars = healthState?.maxPayloadContentChars ?? 80000;
+  const localModelOptions = useMemo(() => {
+    const providerModels = healthState?.llmProviders?.local?.models;
+    if (Array.isArray(providerModels) && providerModels.length) {
+      return providerModels.map((model) => ({ value: model.value, label: model.label }));
+    }
+    return LOCAL_LLM_MODEL_OPTIONS;
+  }, [healthState?.llmProviders?.local?.models]);
+  const activeLlmRequest = useMemo(
+    () => (llmSettings.provider === "local"
+      ? { provider: "local", model: llmSettings.localModel || DEFAULT_LOCAL_LLM_MODEL }
+      : { provider: "openai" }),
+    [llmSettings.localModel, llmSettings.provider]
+  );
+  const activeLlmProviderLabel = LLM_PROVIDER_OPTIONS.find((option) => option.value === llmSettings.provider)?.label ?? "OpenAI";
+  const activeLocalModelLabel = localModelOptions.find((option) => option.value === (llmSettings.localModel || DEFAULT_LOCAL_LLM_MODEL))?.label ?? "Qwen3.5 4B";
+  const selectedLocalModelHealth = useMemo(
+    () => healthState?.llmProviders?.local?.models?.find((model) => model.value === (llmSettings.localModel || DEFAULT_LOCAL_LLM_MODEL)) ?? null,
+    [healthState?.llmProviders?.local?.models, llmSettings.localModel]
+  );
+  const canUseSelectedLlm = llmSettings.provider === "local"
+    ? Boolean(healthState?.llmProviders?.local?.available) && selectedLocalModelHealth?.installed !== false
+    : Boolean(healthState?.llmProviders?.openai?.available);
+  const llmStatusMessage = useMemo(() => {
+    if (llmSettings.provider === "local") {
+      const localProvider = healthState?.llmProviders?.local;
+      if (!localProvider?.available) {
+        return `Ollama is not reachable at ${localProvider?.baseUrl ?? "http://127.0.0.1:11434"}. Start Ollama to use local mode.`;
+      }
+      if (selectedLocalModelHealth?.installed === false) {
+        return `${activeLocalModelLabel} is not installed in Ollama yet. Run "ollama pull ${llmSettings.localModel || DEFAULT_LOCAL_LLM_MODEL}" to enable it.`;
+      }
+      return `Ollama is ready. MindWeaver will use ${activeLocalModelLabel} for graph tasks, imports, and extension captures.`;
+    }
+
+    return healthState?.llmProviders?.openai?.available
+      ? `OpenAI is configured. MindWeaver will use ${healthState.llmProviders.openai.defaultModel ?? "its default OpenAI model"} for graph tasks and imports.`
+      : "OpenAI is not configured on the local MindWeaver server. Add an API key or switch to Local (Ollama).";
+  }, [
+    activeLocalModelLabel,
+    healthState?.llmProviders?.local,
+    healthState?.llmProviders?.openai?.available,
+    healthState?.llmProviders?.openai?.defaultModel,
+    llmSettings.localModel,
+    llmSettings.provider,
+    selectedLocalModelHealth?.installed
+  ]);
+  const withLlmSelection = useCallback((payload = {}) => ({
+    ...payload,
+    llmProvider: activeLlmRequest
+  }), [activeLlmRequest]);
+  const contentLimitChars = healthState?.contentLimitChars ?? (llmSettings.provider === "local" ? 128000 : 16000);
+  const maxImportChars = healthState?.maxPayloadContentChars ?? (llmSettings.provider === "local" ? 128000 : 80000);
   const importContentLength = importForm.content.length;
   const importIsTooLong = importContentLength > maxImportChars;
   const chatImportProviderLabel = CHAT_IMPORT_PROVIDER_OPTIONS.find((option) => option.value === chatImportProvider)?.label ?? "ChatGPT";
 
   const fitGraphToViewport = useCallback((duration = 260) => {
     if (!fgRef.current || !graphData.nodes.length) return;
-    const fitPadding = Math.max(84, Math.min(140, Math.round(graphSize.height * 0.24)));
+    const fitPadding = Math.max(104, Math.min(188, Math.round(graphSize.height * 0.26)));
     fgRef.current.zoomToFit(duration, fitPadding);
   }, [graphData.nodes.length, graphSize.height]);
 
@@ -828,11 +956,11 @@ export default function App() {
 
     setIsGraphViewportReady(false);
     fgRef.current.d3Force("nodeCollision", createNodeCollisionForce());
-    fgRef.current.d3Force("charge").strength(-220);
-    fgRef.current.d3Force("link").distance(130);
+    fgRef.current.d3Force("charge").strength(getChargeStrength(graphData.nodes.length));
+    fgRef.current.d3Force("link").distance(getLinkDistance);
     pendingGraphFitRef.current = true;
     fgRef.current.d3ReheatSimulation();
-  }, [graphTopologySignature, graphData.nodes.length, sessionId]);
+  }, [graphData.nodes.length, graphTopologySignature, sessionId]);
 
   useEffect(() => {
     if (!graphData.nodes.length) return;
@@ -841,14 +969,14 @@ export default function App() {
     graphFitTimersRef.current = [
       window.setTimeout(() => {
         if (!pendingGraphFitRef.current) {
-          finalizeGraphViewport(260);
-        }
-      }, 140),
-      window.setTimeout(() => {
-        if (!pendingGraphFitRef.current) {
           finalizeGraphViewport(320);
         }
-      }, 420)
+      }, 220),
+      window.setTimeout(() => {
+        if (!pendingGraphFitRef.current) {
+          finalizeGraphViewport(420);
+        }
+      }, 760)
     ];
 
     return () => {
@@ -863,8 +991,8 @@ export default function App() {
     const fallbackTimer = window.setTimeout(() => {
       if (!pendingGraphFitRef.current) return;
       pendingGraphFitRef.current = false;
-      finalizeGraphViewport(360);
-    }, 900);
+      finalizeGraphViewport(440);
+    }, 1400);
 
     return () => window.clearTimeout(fallbackTimer);
   }, [finalizeGraphViewport, graphTopologySignature, graphData.nodes.length, sessionId]);
@@ -872,7 +1000,7 @@ export default function App() {
   const handleGraphEngineStop = useCallback(() => {
     if (!pendingGraphFitRef.current) return;
     pendingGraphFitRef.current = false;
-    finalizeGraphViewport(320);
+    finalizeGraphViewport(400);
   }, [finalizeGraphViewport]);
 
   const selectedNodeConnections = useMemo(() => {
@@ -912,19 +1040,36 @@ export default function App() {
       .sort((left, right) => left.label.localeCompare(right.label));
   }, [graphState, selectedNode?.id, selectedNode?.type]);
 
-  const sessionSummaryMap = useMemo(
-    () => new Map(recentSessions.map((session) => [session.id, session])),
-    [recentSessions]
-  );
   const openTabSessions = useMemo(
-    () => openTabs.map((entry) => sessionSummaryMap.get(entry)).filter(Boolean),
-    [openTabs, sessionSummaryMap]
+    () => sessionTargetState.tabSessions ?? [],
+    [sessionTargetState.tabSessions]
+  );
+  const openTabIds = useMemo(
+    () => openTabSessions.map((session) => session.id),
+    [openTabSessions]
   );
   const reopenableSessions = useMemo(
-    () => recentSessions.filter((session) => !openTabs.includes(session.id)).slice(0, 6),
-    [openTabs, recentSessions]
+    () => recentSessions.filter((session) => !openTabIds.includes(session.id)).slice(0, 6),
+    [openTabIds, recentSessions]
   );
   const activeWorkspaceName = sessionTargetState.workspaces?.[0]?.name ?? "Personal Learning";
+
+  const handleLlmProviderChange = useCallback((provider) => {
+    const nextProvider = provider === "local" ? "local" : DEFAULT_LLM_PROVIDER;
+    if (nextProvider === llmSettings.provider) return;
+    void updateLlmSettings({
+      provider: nextProvider,
+      localModel: llmSettings.localModel || DEFAULT_LOCAL_LLM_MODEL
+    });
+  }, [llmSettings.localModel, llmSettings.provider, updateLlmSettings]);
+
+  const handleLocalModelChange = useCallback((model) => {
+    if (model === llmSettings.localModel) return;
+    void updateLlmSettings({
+      provider: "local",
+      localModel: model || DEFAULT_LOCAL_LLM_MODEL
+    });
+  }, [llmSettings.localModel, updateLlmSettings]);
 
   const handleReview = async (nodeId, action) => {
     if (!sessionId) return;
@@ -956,12 +1101,12 @@ export default function App() {
       const result = await fetchJson(`${API_BASE}/api/learn-more`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(withLlmSelection({
           label: selectedNode.label,
           type: selectedNode.type,
           upstream: selectedNodeConnections.upstream.map((entry) => entry.node.label),
           downstream: selectedNodeConnections.downstream.map((entry) => entry.node.label)
-        })
+        }))
       });
       setLearnMoreCopy(result.content ?? "");
     } catch (error) {
@@ -981,10 +1126,10 @@ export default function App() {
       const result = await fetchJson(`${API_BASE}/api/gaps`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(withLlmSelection({
           sessionId,
           goalId: primaryGoalNode.id
-        })
+        }))
       });
       setGapSummary(result);
       setStatusMessage("Gap analysis updated from the current map.");
@@ -1008,7 +1153,7 @@ export default function App() {
       const result = await fetchJson(`${API_BASE}/api/quiz`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId })
+        body: JSON.stringify(withLlmSelection({ sessionId }))
       });
       setQuizState(result);
     } catch (error) {
@@ -1198,14 +1343,14 @@ export default function App() {
       await fetchJson(`${API_BASE}/api/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(withLlmSelection({
           sessionId,
           sourceType: importForm.sourceType,
           title: importForm.title.trim(),
           url: importForm.url.trim() || undefined,
           excerpt: importForm.content.trim().slice(0, 280),
           content: importForm.content.trim()
-        })
+        }))
       });
       setImportForm((current) => ({
         ...current,
@@ -1242,14 +1387,14 @@ export default function App() {
       const result = await fetchJson(`${API_BASE}/api/import-bulk`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(withLlmSelection({
           sessionId,
           items: chunks.map((content, index) => ({
             sourceType: "markdown",
             title: `Bulk note ${index + 1}`,
             content
           }))
-        })
+        }))
       });
       setBulkImportText("");
       setStatusMessage(`Bulk import complete: ${result.importedCount} imported, ${result.dedupedCount} deduped, ${result.failedCount} failed.`);
@@ -1285,7 +1430,7 @@ export default function App() {
       const result = await fetchJson(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, question: chatQuestion.trim() })
+        body: JSON.stringify(withLlmSelection({ sessionId, question: chatQuestion.trim() }))
       });
       setChatAnswer(result);
     } catch (error) {
@@ -1486,7 +1631,10 @@ export default function App() {
 
   const handleRefineMap = async () => {
     if (!sessionId) return;
-    const confirmed = window.confirm("Refine this map with OpenAI? MindWeaver will rename, merge, and reconnect nodes conservatively to improve clarity.");
+    const activeRefineLabel = llmSettings.provider === "local"
+      ? `${activeLocalModelLabel} via Ollama`
+      : "OpenAI";
+    const confirmed = window.confirm(`Refine this map with ${activeRefineLabel}? MindWeaver will rename, merge, and reconnect nodes conservatively to improve clarity.`);
     if (!confirmed) return;
 
     setIsRefiningMap(true);
@@ -1496,7 +1644,7 @@ export default function App() {
       const result = await fetchJson(`${API_BASE}/api/refine`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId })
+        body: JSON.stringify(withLlmSelection({ sessionId }))
       });
       const warningCopy = result.applied?.warnings?.length ? ` ${result.applied.warnings.join(" ")}` : "";
       setStatusMessage(`${result.message || "Map refined."}${warningCopy}`);
@@ -1518,7 +1666,7 @@ export default function App() {
       const result = await fetchJson(`${API_BASE}/api/intersect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nodeId1: selectedNode.id, nodeId2: intersectionTargetId })
+        body: JSON.stringify(withLlmSelection({ nodeId1: selectedNode.id, nodeId2: intersectionTargetId }))
       });
       setIntersectionResult(result);
     } catch (error) {
@@ -1569,15 +1717,15 @@ export default function App() {
     ctx.save();
     drawRoundedRect(ctx, metrics.x, metrics.y, metrics.width, metrics.height, 8);
     ctx.fillStyle = metrics.fill;
-    ctx.shadowColor = isSelected ? "rgba(255,255,255,0.34)" : "transparent";
-    ctx.shadowBlur = isSelected ? 14 : 0;
+    ctx.shadowColor = isSelected ? metrics.shadowColor : "transparent";
+    ctx.shadowBlur = isSelected ? 18 : 0;
     ctx.fill();
-    ctx.lineWidth = isSelected ? 2.6 : 1.5;
-    ctx.strokeStyle = isSelected ? "#050505" : metrics.stroke;
+    ctx.lineWidth = isSelected ? 3 : 1.6;
+    ctx.strokeStyle = isSelected ? metrics.selectedStroke : metrics.stroke;
     ctx.stroke();
     ctx.shadowBlur = 0;
 
-    ctx.fillStyle = "#050505";
+    ctx.fillStyle = metrics.textFill;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.font = `700 ${metrics.fontSize}px Segoe UI`;
@@ -1595,10 +1743,11 @@ export default function App() {
   };
 
   const handleLinkRender = (link, ctx) => {
+    const style = getLinkVisualStyle(link);
     ctx.save();
-    ctx.strokeStyle = link.type === "needs" ? "rgba(255,255,255,0.48)" : "rgba(255,255,255,0.22)";
-    ctx.lineWidth = link.type === "needs" ? 1.7 : 1.1;
-    if (link.type === "needs") ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = style.stroke;
+    ctx.lineWidth = style.lineWidth;
+    if (style.dash.length) ctx.setLineDash(style.dash);
     ctx.beginPath();
     ctx.moveTo(link.source.x, link.source.y);
     ctx.lineTo(link.target.x, link.target.y);
@@ -1686,6 +1835,40 @@ export default function App() {
               Start a map, save the current page from the extension, or paste notes and transcripts directly.
               MindWeaver turns the work into a source-grounded map you can review, quiz, and improve.
             </p>
+            <div className="llm-settings-panel">
+              <div className="llm-settings-header">
+                <div>
+                  <span className="panel-title">AI Provider</span>
+                  <strong>{activeLlmProviderLabel}{llmSettings.provider === "local" ? ` • ${activeLocalModelLabel}` : ""}</strong>
+                </div>
+                <p>The same setting is shared across the homepage, the graph workspace, and extension captures.</p>
+              </div>
+              <div className="llm-settings-grid">
+                <label className="llm-settings-field">
+                  <span>Provider</span>
+                  <SelectControl
+                    value={llmSettings.provider}
+                    onChange={handleLlmProviderChange}
+                    options={LLM_PROVIDER_OPTIONS}
+                    ariaLabel="AI provider"
+                  />
+                </label>
+                {llmSettings.provider === "local" ? (
+                  <label className="llm-settings-field">
+                    <span>Model</span>
+                    <SelectControl
+                      value={llmSettings.localModel}
+                      onChange={handleLocalModelChange}
+                      options={localModelOptions}
+                      ariaLabel="Local AI model"
+                    />
+                  </label>
+                ) : null}
+              </div>
+              <div className={`toolbar-note llm-status-note ${canUseSelectedLlm ? "" : "is-warning"}`.trim()}>
+                {isSavingLlmSettings ? "Saving AI provider preference..." : llmStatusMessage}
+              </div>
+            </div>
             <form className="start-form" onSubmit={handleCreateSession}>
               <label>
                 <span>Map name</span>
@@ -1720,7 +1903,7 @@ export default function App() {
               <p className="panel-title">Safety</p>
               <div className="safety-stack">
                 <div><strong>Local-first storage</strong><span>Your graph is stored in the local server data file.</span></div>
-                <div><strong>AI visibility</strong><span>{healthState?.openaiConfigured ? `OpenAI is configured. Up to ${healthState.contentLimitChars?.toLocaleString() ?? "16,000"} characters per source can be sent for classification.` : "OpenAI is not configured, so AI features will be unavailable."}</span></div>
+                <div><strong>AI visibility</strong><span>{llmStatusMessage} Up to {contentLimitChars.toLocaleString()} characters per source can be sent to the selected model for classification.</span></div>
                 <div><strong>Human control</strong><span>Every inferred concept can be approved, rejected, or deleted with the session.</span></div>
               </div>
             </div>
@@ -1833,7 +2016,9 @@ export default function App() {
             primaryGoalNode={primaryGoalNode}
             isRefiningMap={isRefiningMap}
             onRefineMap={handleRefineMap}
-            openaiConfigured={healthState?.openaiConfigured}
+            canUseLlm={canUseSelectedLlm}
+            llmProviderLabel={llmSettings.provider === "local" ? `${activeLocalModelLabel} via Ollama` : "OpenAI"}
+            llmStatusMessage={llmStatusMessage}
             nodeCount={graphData.nodes.length}
           />
 
@@ -1863,7 +2048,7 @@ export default function App() {
           <section className="panel safety-panel">
             <p className="panel-title">Privacy & Control</p>
             <p className="panel-subtitle">
-              Local storage is used for the graph. AI classification uses configured OpenAI calls, capped at {healthState?.contentLimitChars?.toLocaleString() ?? "16,000"} characters per source.
+              Local storage is used for the graph. AI tasks currently follow the homepage provider setting: {activeLlmProviderLabel}{llmSettings.provider === "local" ? ` (${activeLocalModelLabel})` : ""}. Source classification reads up to {contentLimitChars.toLocaleString()} characters per source.
             </p>
             <div className="queue-actions">
               <button className="small-button" onClick={() => navigateToSession(null)}>All Maps</button>
@@ -1944,6 +2129,8 @@ export default function App() {
               <span>{graphState?.session?.endedAt ? "Ended" : "Live map"}</span>
               <span>•</span>
               <span>{graphState?.artifacts?.length ?? 0} sources</span>
+              <span>•</span>
+              <span>Manual refresh</span>
             </div>
           </div>
           {searchResults.length ? (
@@ -1965,6 +2152,29 @@ export default function App() {
             </div>
           ) : null}
           <div className="graph-canvas" ref={graphContainerRef}>
+            <button
+              className="graph-refresh-button"
+              type="button"
+              onClick={handleRefreshGraph}
+              disabled={isLoadingGraph}
+              title="Reload this map and the shared map state"
+            >
+              {isLoadingGraph ? "Refreshing..." : "Refresh map"}
+            </button>
+            {graphData.nodes.length ? (
+              <div className="graph-legend" aria-label="Graph node type legend">
+                {NODE_TYPE_LEGEND.map((item) => (
+                  <span key={item.type} className="graph-legend-item">
+                    <span
+                      className="graph-legend-swatch"
+                      aria-hidden="true"
+                      style={{ background: item.fill, borderColor: item.stroke }}
+                    />
+                    {item.label}
+                  </span>
+                ))}
+              </div>
+            ) : null}
             {graphData.nodes.length > 0 && !isGraphViewportReady ? (
               <div className="graph-loading-overlay">
                 <p className="panel-title">Preparing View</p>
@@ -2000,9 +2210,9 @@ export default function App() {
                 openRightPanel("inspector");
               }}
               nodeRelSize={4}
-              warmupTicks={90}
-              cooldownTicks={60}
-              d3VelocityDecay={0.28}
+              warmupTicks={140}
+              cooldownTicks={110}
+              d3VelocityDecay={0.22}
               onEngineStop={handleGraphEngineStop}
             />
           </div>
@@ -2175,7 +2385,7 @@ export default function App() {
                 <div className="summary-card onboarding-import-card">
                   <h3>Import Chat History Context</h3>
                   <div className="queue-meta">
-                    Copy the prompt below, paste it into {chatImportProviderLabel}, then paste the JSON response back into MindWeaver. The import adds source-backed domain, skill, and concept nodes to this map without needing another OpenAI pass.
+                    Copy the prompt below, paste it into {chatImportProviderLabel}, then paste the JSON response back into MindWeaver. The import adds source-backed domain, skill, and concept nodes to this map without needing another classification pass.
                   </div>
                   <div className="import-form workspace-form">
                     <SelectControl
@@ -2267,7 +2477,7 @@ export default function App() {
                     />
                     <input className="text-input" type="file" accept=".txt,.md,.text" onChange={handleImportFile} />
                     <div className={`char-meter ${importIsTooLong ? "is-danger" : ""}`}>
-                      {importContentLength.toLocaleString()} / {maxImportChars.toLocaleString()} characters. OpenAI classification reads up to {healthState?.contentLimitChars?.toLocaleString() ?? "16,000"} characters.
+                      {importContentLength.toLocaleString()} / {maxImportChars.toLocaleString()} characters. The selected AI provider reads up to {contentLimitChars.toLocaleString()} characters for classification.
                     </div>
                     {importIsTooLong ? <div className="message-banner error-banner">This import is too large. Trim it or split it into multiple sources before importing.</div> : null}
                     <button className="primary-button" type="submit" disabled={isImporting || importIsTooLong}>

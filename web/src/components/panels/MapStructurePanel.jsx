@@ -11,7 +11,9 @@ export default function MapStructurePanel({
   primaryGoalNode,
   isRefiningMap,
   onRefineMap,
-  openaiConfigured,
+  canUseLlm,
+  llmProviderLabel,
+  llmStatusMessage,
   nodeCount
 }) {
   return (
@@ -57,17 +59,19 @@ export default function MapStructurePanel({
         <button
           className="secondary-button"
           type="button"
-          disabled={isRefiningMap || !openaiConfigured || nodeCount < 2}
+          disabled={isRefiningMap || !canUseLlm || nodeCount < 2}
           onClick={onRefineMap}
         >
           {isRefiningMap ? "Refining..." : "Refine Map"}
         </button>
       </div>
-      {!openaiConfigured ? (
-        <div className="toolbar-note">Configure OpenAI to use Refine.</div>
+      {!canUseLlm ? (
+        <div className="toolbar-note">{llmStatusMessage}</div>
       ) : nodeCount < 2 ? (
         <div className="toolbar-note">Add at least two nodes to this map before running Refine.</div>
-      ) : null}
+      ) : (
+        <div className="toolbar-note">Refine will use {llmProviderLabel} for this cleanup pass.</div>
+      )}
     </section>
   );
 }

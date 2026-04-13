@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createNodeCollisionForce,
+  getChargeStrength,
+  getLinkDistance,
+  getLinkVisualStyle,
   getNodeMetrics,
   getNodeVisualStyle,
-  NODE_HIERARCHY_LEVELS
+  NODE_HIERARCHY_LEVELS,
+  NODE_TYPE_LEGEND
 } from "../src/lib/graph-rendering.js";
 
 function createMockContext() {
@@ -34,6 +38,19 @@ test("node visual style grows with hierarchy scale", () => {
   assert.ok(scaled.width > base.width);
   assert.ok(scaled.height > base.height);
   assert.ok(scaled.fontSize >= base.fontSize);
+});
+
+test("node types keep a clear visual hierarchy with unique legend colors", () => {
+  const goal = getNodeVisualStyle({ type: "goal" });
+  const domain = getNodeVisualStyle({ type: "domain" });
+  const skill = getNodeVisualStyle({ type: "skill" });
+  const concept = getNodeVisualStyle({ type: "concept" });
+
+  assert.ok(goal.width > domain.width);
+  assert.ok(domain.width > skill.width);
+  assert.ok(skill.width > concept.width);
+  assert.ok(goal.width - concept.width >= 100);
+  assert.equal(new Set(NODE_TYPE_LEGEND.map((item) => item.fill)).size, 4);
 });
 
 test("node metrics wrap long labels into bounded card dimensions", () => {
@@ -70,4 +87,23 @@ test("collision force pushes overlapping nodes apart", () => {
 
   const endingDistance = Math.hypot(nodes[1].x - nodes[0].x, nodes[1].y - nodes[0].y);
   assert.ok(endingDistance > startingDistance);
+});
+
+test("graph layout helpers spread larger maps and differentiate link semantics", () => {
+  assert.ok(Math.abs(getChargeStrength(60)) > Math.abs(getChargeStrength(12)));
+
+  const topLevelDistance = getLinkDistance({
+    type: "focuses_on",
+    source: { type: "goal" },
+    target: { type: "domain" }
+  });
+  const conceptDistance = getLinkDistance({
+    type: "builds_on",
+    source: { type: "skill" },
+    target: { type: "concept" }
+  });
+
+  assert.ok(topLevelDistance > conceptDistance);
+  assert.ok(getLinkVisualStyle({ type: "needs" }).dash.length > 0);
+  assert.notEqual(getLinkVisualStyle({ type: "focuses_on" }).stroke, getLinkVisualStyle({ type: "builds_on" }).stroke);
 });

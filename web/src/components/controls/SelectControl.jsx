@@ -79,7 +79,10 @@ export default function SelectControl({ value, onChange, options, className = ""
   }, [isOpen]);
 
   return (
-    <div ref={rootRef} className={`select-control ${className}`.trim()}>
+    <div
+      ref={rootRef}
+      className={`select-control is-${menuPlacement} ${isOpen ? "is-open" : ""} ${className}`.trim()}
+    >
       <button
         ref={buttonRef}
         type="button"

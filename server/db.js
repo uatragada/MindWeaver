@@ -18,7 +18,9 @@ export function createDefaultData() {
     reports: [],
     preferences: {
       activeSessionId: null,
-      lastSessionId: null
+      lastSessionId: null,
+      llmProvider: "openai",
+      localLlmModel: "qwen3.5:4b"
     }
   };
 }
@@ -43,7 +45,11 @@ export async function initDb(targetDb = db) {
   targetDb.data.reports ||= [];
   targetDb.data.preferences ||= {
     activeSessionId: null,
-    lastSessionId: null
+    lastSessionId: null,
+    llmProvider: "openai",
+    localLlmModel: "qwen3.5:4b"
   };
+  targetDb.data.preferences.llmProvider = String(targetDb.data.preferences.llmProvider ?? "").trim().toLowerCase() === "local" ? "local" : "openai";
+  targetDb.data.preferences.localLlmModel = String(targetDb.data.preferences.localLlmModel ?? "").trim() || "qwen3.5:4b";
   await targetDb.write();
 }

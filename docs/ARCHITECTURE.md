@@ -5,12 +5,13 @@ MindWeaver is a local-first app with three runtime pieces: a Chrome extension, a
 ```mermaid
 flowchart LR
   User["User"] --> Popup["Chrome extension popup"]
-  Popup -->|"Save Current Page"| Content["On-demand content.js injection"]
+  Popup -->|"Save Current Page / Continuous Save"| Content["content.js injection after save or navigation"]
   Popup -->|"Save highlight"| Background["Extension background worker"]
   Content --> Background
   Background -->|"POST /api/ingest or /api/import"| Server["Express server"]
   Server --> DB["LowDB JSON store"]
   Server -->|"optional"| OpenAI["OpenAI API"]
+  Server -->|"optional"| Ollama["Ollama local model"]
   Web["React web app"] -->|"REST API"| Server
   Server -->|"production static files"| Web
 ```
@@ -30,16 +31,16 @@ The extension is an explicit save surface, not a continuous browsing tracker.
 
 The server owns persistence, graph mutations, AI calls, and production static serving.
 
-- `server/index.js` loads `.env.local`, initializes the database, builds the OpenAI client, and starts Express.
+- `server/index.js` loads `.env.local`, initializes the database, builds the AI clients, and starts Express.
 - `server/app.js` defines all API routes and most product logic.
 - `server/db.js` defines the default LowDB data shape and initializes the local JSON file.
-- `server/openai.js` wraps OpenAI calls with timeouts and safer JSON parsing.
+- `server/openai.js` wraps OpenAI and Ollama calls with timeouts, structured-output validation, and provider-specific request shaping.
 
 ### Web
 
 The web app is a Vite + React UI for map exploration and cleanup.
 
-- `web/src/App.jsx` now acts as the top-level workspace orchestrator for data loading, graph interactions, and panel state.
+- `web/src/App.jsx` now acts as the top-level workspace orchestrator for data loading, graph interactions, manual refresh, and panel state.
 - `web/src/components/` holds extracted UI building blocks such as map panels and shared controls.
 - `web/src/hooks/` holds reusable browser-state hooks such as local-storage persistence and session-route syncing.
 - `web/src/lib/` holds frontend constants, formatting helpers, graph rendering helpers, and chat-import preview parsing.
@@ -69,18 +70,19 @@ Core collections:
 - `verifications`: quiz/review outcomes.
 - `reports`: generated summaries.
 - `users` and `workspaces`: local-first foundations for future hosted/team support.
+- `preferences`: shared active-map state, open map tabs, and selected AI settings.
 
 ## Ingestion Flow
 
-1. A user clicks `Save Current Page` in the extension.
+1. A user clicks `Save Current Page` in the extension or turns on `Continuous Save`.
 2. The extension creates a session if needed.
-3. The background worker injects `content.js` into the active tab.
+3. The background worker injects `content.js` into the active tab when the user saves manually or a newly visited page is observed while the toggle is on.
 4. The extracted page payload is sent to `POST /api/ingest`.
-5. The server dedupes by `sessionId + url`.
-6. The server checks whether the page is worth ingesting.
-7. The server classifies the source into domain, skill, and concepts.
-8. Nodes, edges, artifact provenance, review state, and recommendations are updated.
-9. The web app fetches `GET /api/graph/:sessionId` and renders the updated map.
+5. The server runs page saves through a FIFO queue and dedupes by `sessionId + url`.
+6. The server checks whether the page is worth ingesting, then classifies the source with the selected AI provider and provider-specific content limits.
+7. Structured JSON responses are validated before they are allowed to mutate the graph.
+8. Nodes, edges, artifact provenance, review state, and recommendations are updated, then exact duplicate labels are merged conservatively.
+9. The web app fetches `GET /api/graph/:sessionId` and renders the updated map when the user refreshes the canvas or switches sessions.
 
 ## Learning Loop
 

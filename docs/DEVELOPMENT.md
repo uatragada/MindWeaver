@@ -6,7 +6,7 @@ This guide covers local setup, common workflows, verification, and release hygie
 
 - Node.js and npm.
 - Chrome or Chromium for the unpacked extension.
-- An OpenAI API key for AI-backed classification and learning features.
+- Either an OpenAI API key or a local Ollama install for AI-backed classification and learning features.
 
 ## Install
 
@@ -48,6 +48,12 @@ Run the main readiness check:
 
 ```bash
 npm run check
+```
+
+Run the browser-extension integration flow:
+
+```bash
+npm run test:extension:integration
 ```
 
 Build the web app:
@@ -93,7 +99,7 @@ When refactoring, prefer moving pure logic into `lib/` first, then extracting st
 4. Load the `extension/` folder as an unpacked extension.
 5. After changing extension files, reload the unpacked extension in Chrome.
 
-The extension saves pages on demand only. It does not continuously track browsing.
+The extension supports one-shot saves and an optional continuous-save toggle for newly visited pages. It still injects extraction through the background worker instead of registering a permanent content script.
 
 ## Data During Development
 
@@ -112,13 +118,8 @@ Do not commit:
 Before pushing meaningful code changes, run:
 
 ```bash
-npm run test
-npm run test:web
-npm run test:extension:unit
-npm run build
-node --check extension\content.js
-node --check extension\background.js
-node --check extension\popup.js
+npm run check
+npm run test:extension:integration
 ```
 
 For security-sensitive or release-prep changes, also run:
@@ -158,4 +159,4 @@ The ignored files should include `server/.env.local`, `server/data.json`, `serve
 - If the extension cannot save a page, make sure the API server is running on `http://localhost:3001`.
 - If the extension still behaves like an older version, reload it in `chrome://extensions`.
 - If AI features fail, check `server/.env.local` and restart the server.
-- If the graph looks stale, refresh the web app after ingestion or reopen the session URL.
+- If the graph looks stale after an extension save or another external update, use the in-canvas `Refresh map` button. The graph no longer auto-polls.

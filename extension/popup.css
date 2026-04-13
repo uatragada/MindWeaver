@@ -8,6 +8,7 @@
   --mw-text: #f4f4f4;
   --mw-muted: #9b9b9b;
   --mw-danger: #ff4d4d;
+  --mw-success: #4fd46a;
   --mw-shadow: 0 16px 38px rgba(0, 0, 0, 0.42);
   --mw-radius-lg: 8px;
   --mw-radius-md: 8px;
@@ -257,6 +258,24 @@ button.danger {
   border: 1px solid rgba(255, 77, 77, 0.36);
   background: rgba(255, 77, 77, 0.16);
   color: #ffd6d6;
+}
+
+button.success {
+  border: 1px solid rgba(79, 212, 106, 0.5);
+  background: rgba(36, 120, 53, 0.24);
+  color: #dff9e5;
+}
+
+button.success.toggle-on {
+  background: linear-gradient(180deg, rgba(79, 212, 106, 0.94), rgba(52, 164, 77, 0.94));
+  border-color: rgba(141, 239, 162, 0.9);
+  color: #04110a;
+}
+
+button.success.toggle-off {
+  background: rgba(36, 120, 53, 0.22);
+  border-color: rgba(79, 212, 106, 0.4);
+  color: #dff9e5;
 }
 
 .footer-note {
