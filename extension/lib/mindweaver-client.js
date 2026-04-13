@@ -69,7 +69,7 @@ function createMindWeaverClient({
 
     for (const base of bases) {
       try {
-        const response = await fetchImpl(`${base}${path}`, options);
+        const response = await fetchImpl(`${base}${path}`, { cache: "no-store", ...options });
         const payload = await response.json().catch(() => ({}));
 
         if (!response.ok) {

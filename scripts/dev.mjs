@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureMindWeaverDevPortsAvailable } from "./dev-runtime.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, "..");
@@ -39,25 +40,36 @@ function shutdown(code = 0) {
   setTimeout(() => process.exit(code), 200);
 }
 
-for (const processConfig of processes) {
-  const child = spawn(spawnConfig.command, spawnConfig.args, {
-    cwd: processConfig.cwd,
-    env: process.env,
-    stdio: ["inherit", "pipe", "pipe"]
-  });
+try {
+  const { clearedProcesses } = await ensureMindWeaverDevPortsAvailable({ rootDir });
+  if (clearedProcesses.length) {
+    const ports = clearedProcesses.map((processInfo) => processInfo.port).join(", ");
+    process.stdout.write(`Cleared stale MindWeaver dev processes on port(s): ${ports}\n`);
+  }
 
-  pipeWithPrefix(child.stdout, processConfig.name, processConfig.color);
-  pipeWithPrefix(child.stderr, processConfig.name, processConfig.color);
+  for (const processConfig of processes) {
+    const child = spawn(spawnConfig.command, spawnConfig.args, {
+      cwd: processConfig.cwd,
+      env: process.env,
+      stdio: ["inherit", "pipe", "pipe"]
+    });
 
-  child.on("exit", (code) => {
-    if (code && code !== 0) {
-      process.stderr.write(`${processConfig.color}[${processConfig.name}]\x1b[0m exited with code ${code}\n`);
-      shutdown(code);
-    }
-  });
+    pipeWithPrefix(child.stdout, processConfig.name, processConfig.color);
+    pipeWithPrefix(child.stderr, processConfig.name, processConfig.color);
 
-  children.push(child);
+    child.on("exit", (code) => {
+      if (code && code !== 0) {
+        process.stderr.write(`${processConfig.color}[${processConfig.name}]\x1b[0m exited with code ${code}\n`);
+        shutdown(code);
+      }
+    });
+
+    children.push(child);
+  }
+
+  process.on("SIGINT", () => shutdown(0));
+  process.on("SIGTERM", () => shutdown(0));
+} catch (error) {
+  process.stderr.write(`MindWeaver dev startup failed: ${error.message}\n`);
+  process.exit(1);
 }
-
-process.on("SIGINT", () => shutdown(0));
-process.on("SIGTERM", () => shutdown(0));

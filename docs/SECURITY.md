@@ -26,7 +26,7 @@ If a real API key is ever committed, rotate it immediately. Removing it from a l
 
 Runtime data lives in `server/data.json`. It can include:
 
-- session goals,
+- map names and optional goal nodes,
 - saved page URLs and titles,
 - imported note/transcript/PDF text excerpts,
 - concept labels and summaries,

@@ -415,6 +415,54 @@ button {
   border-left: 3px solid rgba(255, 255, 255, 0.42);
 }
 
+.structure-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.025) 100%),
+    var(--mw-surface-strong);
+  border-left: 3px solid rgba(255, 255, 255, 0.24);
+}
+
+.toolbar-inline-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
+.toolbar-inline-form .text-input {
+  grid-column: 1 / -1;
+}
+
+.structure-field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toolbar-note {
+  padding: 10px 12px;
+  border-radius: var(--mw-radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--mw-muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.structure-action-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.structure-action-block .secondary-button {
+  width: 100%;
+}
+
 .hero-card h1 {
   margin: 0;
   font-size: 1.45rem;
@@ -1084,6 +1132,81 @@ select.text-input option:hover {
   color: #ffd6d6;
 }
 
+.onboarding-import-card {
+  display: grid;
+  gap: 10px;
+}
+
+.chat-import-prompt-area {
+  min-height: 210px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(9, 9, 9, 0.96);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.chat-import-prompt-area[readonly] {
+  cursor: text;
+}
+
+.chat-import-json-area {
+  min-height: 220px;
+}
+
+.chat-import-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.chat-import-preview {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--mw-radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.chat-import-preview-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-import-preview-header strong {
+  font-size: 0.98rem;
+}
+
+.chat-import-preview-header span {
+  color: var(--mw-muted);
+  font-size: 0.84rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.chat-import-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-import-pill {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--mw-text);
+  font-size: 0.84rem;
+  line-height: 1.2;
+}
+
+.chat-import-preview-summary {
+  margin-top: 0;
+  white-space: pre-wrap;
+}
+
 .pathway-list {
   margin: 12px 0 0;
   padding-left: 18px;
@@ -1557,6 +1680,10 @@ select.text-input option:hover {
 
   .stat-grid,
   .metadata-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar-inline-form {
     grid-template-columns: 1fr;
   }
 

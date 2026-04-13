@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { nanoid } from "nanoid";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createDefaultData } from "./db.js";
@@ -21,10 +22,23 @@ const SOURCE_TYPE_LABELS = {
   markdown: "Markdown Notes",
   bookmark: "Bookmark",
   repo: "Repository/Docs",
-  highlight: "Highlight"
+  highlight: "Highlight",
+  chatgpt: "ChatGPT History",
+  claude: "Claude History",
+  other: "AI Chat History"
 };
 const ALLOWED_SOURCE_TYPES = new Set(Object.keys(SOURCE_TYPE_LABELS));
 const RELATIONSHIP_TYPES = new Set(["contains", "builds_on", "prerequisite", "related", "contrasts", "supports", "needs", "pursues", "focuses_on"]);
+const CHAT_IMPORT_SCHEMA_VERSION = "mindweaver.chat_import.v1";
+const CHAT_IMPORT_PROVIDERS = new Set(["chatgpt", "claude", "other"]);
+const CHAT_IMPORT_NODE_TYPES = new Set(["domain", "skill", "concept"]);
+const CHAT_IMPORT_RELATIONSHIP_TYPES = new Set(["contains", "builds_on", "prerequisite", "related", "contrasts", "supports", "needs", "focuses_on"]);
+const CHAT_IMPORT_NODE_TYPE_PRIORITY = {
+  concept: 1,
+  skill: 2,
+  domain: 3
+};
+const USER_CREATABLE_NODE_TYPES = new Set(["goal", "domain", "skill", "concept"]);
 
 function hasSessionMembership(record, sessionId) {
   return Array.isArray(record?.sessionIds) && record.sessionIds.includes(sessionId);
@@ -102,6 +116,203 @@ function createSyntheticUrl(sourceType, title) {
   return `mindweaver://${sourceType}/${slug}`;
 }
 
+function clampConfidence(value, fallback = 0.72) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0.35, Math.min(0.99, value));
+}
+
+function sanitizeNodeLabelForType(type, value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return "";
+  return type === "goal" ? trimmed : normalizeLabel(trimmed);
+}
+
+function createSessionNode(db, {
+  type,
+  label,
+  createdBy = "user",
+  verified = false,
+  confidence = verified ? 1 : createdBy === "ai" ? 0.7 : 0.92,
+  sessionId,
+  description = "",
+  sourceType = null,
+  artifactId = null,
+  reason = null
+} = {}) {
+  const safeLabel = sanitizeNodeLabelForType(type, label);
+  if (!safeLabel) return null;
+
+  return ensureNode(db, `${type}:${nanoid()}`, safeLabel, type, {
+    createdBy,
+    verified,
+    confidence,
+    sessionId,
+    description,
+    sourceType,
+    artifactId,
+    reason
+  });
+}
+
+function getDefaultRelationshipType(parentType, childType) {
+  if (parentType === "root" && childType === "goal") return "pursues";
+  if (parentType === "goal" && childType === "domain") return "focuses_on";
+  if (parentType === "domain" && childType === "skill") return "contains";
+  if (parentType === "skill" && childType === "concept") return "builds_on";
+  return childType === "goal" ? "pursues" : "contains";
+}
+
+function sanitizeShortList(values, { maxItems = 8, maxLength = 180, excluded = [] } = {}) {
+  if (!Array.isArray(values)) return [];
+  const excludedSet = new Set(excluded.map((value) => normalizeLabel(value)).filter(Boolean));
+  const output = [];
+  const seen = new Set();
+
+  for (const rawValue of values) {
+    const value = String(rawValue ?? "").trim().slice(0, maxLength);
+    const normalized = normalizeLabel(value);
+    if (!value || !normalized || excludedSet.has(normalized) || seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(value);
+    if (output.length >= maxItems) break;
+  }
+
+  return output;
+}
+
+function pickPreferredChatImportDescription(currentValue, nextValue) {
+  const current = String(currentValue ?? "").trim();
+  const next = String(nextValue ?? "").trim();
+  return next.length > current.length ? next : current;
+}
+
+function mergeChatImportNode(existingNode, nextNode) {
+  const existingTypeScore = CHAT_IMPORT_NODE_TYPE_PRIORITY[existingNode.type] ?? 0;
+  const nextTypeScore = CHAT_IMPORT_NODE_TYPE_PRIORITY[nextNode.type] ?? 0;
+
+  return {
+    type: nextTypeScore > existingTypeScore ? nextNode.type : existingNode.type,
+    label: existingNode.label,
+    description: pickPreferredChatImportDescription(existingNode.description, nextNode.description),
+    confidence: Math.max(existingNode.confidence, nextNode.confidence),
+    aliases: sanitizeShortList([...existingNode.aliases, ...nextNode.aliases], {
+      maxItems: 12,
+      maxLength: 100,
+      excluded: [existingNode.label]
+    }),
+    evidence: sanitizeShortList([...existingNode.evidence, ...nextNode.evidence], {
+      maxItems: 8,
+      maxLength: 220
+    })
+  };
+}
+
+function buildChatImportWarnings(warningCounts) {
+  const warnings = [];
+
+  if (warningCounts.invalidNodes) warnings.push(`Skipped ${warningCounts.invalidNodes} invalid node${warningCounts.invalidNodes === 1 ? "" : "s"}.`);
+  if (warningCounts.duplicateNodes) warnings.push(`Merged ${warningCounts.duplicateNodes} duplicate node label${warningCounts.duplicateNodes === 1 ? "" : "s"} after normalization.`);
+  if (warningCounts.invalidRelationships) warnings.push(`Skipped ${warningCounts.invalidRelationships} invalid relationship${warningCounts.invalidRelationships === 1 ? "" : "s"}.`);
+  if (warningCounts.relationshipsMissingNodes) warnings.push(`Skipped ${warningCounts.relationshipsMissingNodes} relationship${warningCounts.relationshipsMissingNodes === 1 ? "" : "s"} that referenced missing nodes.`);
+  if (warningCounts.selfRelationships) warnings.push(`Skipped ${warningCounts.selfRelationships} self-link relationship${warningCounts.selfRelationships === 1 ? "" : "s"}.`);
+  if (warningCounts.invalidHighlights) warnings.push(`Skipped ${warningCounts.invalidHighlights} invalid conversation highlight${warningCounts.invalidHighlights === 1 ? "" : "s"}.`);
+
+  return warnings;
+}
+
+function buildChatHistoryImportPrompt({ provider = "chatgpt", sessionGoal = "" } = {}) {
+  const safeProvider = CHAT_IMPORT_PROVIDERS.has(provider) ? provider : "chatgpt";
+  const providerLabel = safeProvider === "claude" ? "Claude" : safeProvider === "chatgpt" ? "ChatGPT" : "your AI assistant";
+  const goalCopy = sessionGoal ? `"${sessionGoal}"` : "the user's current knowledge map";
+
+  return `You are preparing a structured export for MindWeaver, a local knowledge-map app.
+
+Use only the conversation history and memory you already have from this user, but sweep as broadly and deeply as possible across ALL CONVERSATIONS you can access.
+
+Goal: import as much useful user context as possible into MindWeaver. Be aggressively comprehensive and wide-ranging. Pull from old conversations, recent conversations, repeated threads, one-off but important breakthroughs, active projects, past projects that still matter, recurring questions, tools, frameworks, domains, habits, preferences, misconceptions, constraints, goals, and specialized vocabulary.
+
+The export should capture everything durable or still-relevant that you know about the user, not just a small sample. If the user has discussed multiple areas over time, include all of them. If they have revisited the same topic from different angles, preserve that breadth. If they seem to have strong preferences, repeated workflows, favorite stacks, or recurring pain points, include those too.
+
+Target map: ${goalCopy}
+Source provider: ${providerLabel}
+
+Rules:
+- Return valid JSON only.
+- Do not wrap the response in markdown fences.
+- Use this exact schema_version: "${CHAT_IMPORT_SCHEMA_VERSION}".
+- Set provider to "${safeProvider}".
+- Keep labels concise, specific, and lower-case.
+- Keep labels unique across all nodes.
+- Be as detailed as possible while staying structured and useful.
+- Be as wide-ranging as possible across the user's full conversation history.
+- Prefer recall coverage over minimalism.
+- Include one-off items if they appear important, identity-shaping, project-critical, or frequently revisited later.
+- Avoid secrets, credentials, private personal data, or raw transcript dumps.
+- If unsure, omit the node instead of inventing one.
+
+Allowed node types:
+- "domain"
+- "skill"
+- "concept"
+
+Allowed relationship types:
+- "contains"
+- "builds_on"
+- "prerequisite"
+- "related"
+- "contrasts"
+- "supports"
+- "needs"
+- "focuses_on"
+
+Requirements:
+- title: short name for the import
+- summary: 4-8 sentences and as comprehensive as needed
+- conversation_highlights: include as many durable threads and patterns as are useful
+- nodes: include every meaningful domain, skill, and concept you can justify from the user's history
+- relationships: connect the node labels you created
+- relationships: include as many meaningful links as needed to preserve structure and breadth
+- Each skill should connect to a domain when possible.
+- Each concept should connect to a skill when possible.
+- confidence must be a number between 0.55 and 0.95.
+- evidence should be grounded in the conversation history.
+- Cover all meaningful domains of knowledge you know about this user, not just the most recent one.
+- When in doubt, add another relevant node rather than collapsing distinct user interests together.
+
+Return this JSON shape:
+{
+  "schema_version": "${CHAT_IMPORT_SCHEMA_VERSION}",
+  "provider": "${safeProvider}",
+  "title": "short import title",
+  "summary": "comprehensive summary of the user's interests, goals, preferences, recurring topics, and active context",
+  "conversation_highlights": [
+    {
+      "title": "short highlight title",
+      "summary": "why this thread or pattern matters",
+      "concepts": ["concept label"]
+    }
+  ],
+  "nodes": [
+    {
+      "type": "domain",
+      "label": "distributed systems",
+      "description": "The user repeatedly explores asynchronous architectures and event flow tradeoffs.",
+      "confidence": 0.88,
+      "aliases": ["event systems"],
+      "evidence": ["Asked repeated questions about brokers, consumers, and delivery guarantees."]
+    }
+  ],
+  "relationships": [
+    {
+      "source": "distributed systems",
+      "target": "event handling",
+      "type": "contains",
+      "label": "contains"
+    }
+  ]
+}`;
+}
+
 function buildGraphContext(db) {
   const domains = db.data.nodes.filter((node) => node.type === "domain").map((node) => `"${node.label}"`);
   const skills = db.data.nodes.filter((node) => node.type === "skill").map((node) => `"${node.label}"`);
@@ -118,11 +329,6 @@ Sample edges: ${sampleEdges.join("; ") || "none"}
 
 REQUIRED HIERARCHY:
 Goal -> Domain -> Skill -> Concept
-
-INSTRUCTIONS:
-1. Reuse existing node labels when they already match semantically.
-2. Return concise lowercase labels.
-3. Prefer 1-3 concepts maximum.
 `;
 }
 
@@ -312,6 +518,82 @@ function createGoalForSession(db, sessionId, title, description = "") {
   });
   ensureEdge(db, `session:${sessionId}`, goalId, "pursues", "pursues", 1, "user", sessionId);
   return goal;
+}
+
+function renameSessionMap(db, sessionId, nextMapNameRaw) {
+  const session = getSession(db, sessionId);
+  if (!session) {
+    return { ok: false, error: "session not found" };
+  }
+
+  const previousMapName = String(session.goal ?? "").trim();
+  const nextMapName = String(nextMapNameRaw ?? "").trim();
+  session.goal = nextMapName || null;
+
+  let updatedPrimaryGoalNode = false;
+  const storedGoal = getSessionGoal(db, sessionId);
+  const storedGoalNode = storedGoal
+    ? db.data.nodes.find((node) => node.id === storedGoal.id && hasSessionMembership(node, sessionId))
+    : null;
+  const shouldSyncPrimaryGoal = Boolean(
+    nextMapName
+    && storedGoal
+    && (
+      String(storedGoal.title ?? "").trim() === previousMapName
+      || String(storedGoalNode?.label ?? "").trim() === previousMapName
+    )
+  );
+
+  if (shouldSyncPrimaryGoal) {
+    storedGoal.title = nextMapName;
+    if (storedGoalNode) {
+      storedGoalNode.aliases ||= [];
+      if (previousMapName && previousMapName !== nextMapName && !storedGoalNode.aliases.includes(previousMapName)) {
+        storedGoalNode.aliases.push(previousMapName);
+      }
+      storedGoalNode.label = nextMapName;
+      storedGoalNode.canonicalLabel = normalizeLabel(nextMapName);
+      addHistoryEntry(storedGoalNode, {
+        kind: "map-renamed",
+        sessionId,
+        summary: `Map renamed from "${previousMapName || "Untitled map"}" to "${nextMapName}".`
+      });
+    }
+    updatedPrimaryGoalNode = true;
+  }
+
+  return {
+    ok: true,
+    session,
+    updatedPrimaryGoalNode
+  };
+}
+
+function findPreferredParentNode(db, sessionId, type) {
+  const visibleNodes = findVisibleSessionNodes(db, sessionId);
+  const storedGoal = getSessionGoal(db, sessionId);
+  const storedGoalNode = storedGoal ? db.data.nodes.find((node) => node.id === storedGoal.id && hasSessionMembership(node, sessionId)) : null;
+
+  if (type === "goal") {
+    return db.data.nodes.find((node) => node.id === `session:${sessionId}` && hasSessionMembership(node, sessionId)) ?? null;
+  }
+
+  if (type === "domain") {
+    return storedGoalNode ?? db.data.nodes.find((node) => node.id === `session:${sessionId}` && hasSessionMembership(node, sessionId)) ?? null;
+  }
+
+  if (type === "skill") {
+    return visibleNodes.find((node) => node.type === "domain") ?? storedGoalNode ?? null;
+  }
+
+  if (type === "concept") {
+    return visibleNodes.find((node) => node.type === "skill")
+      ?? visibleNodes.find((node) => node.type === "domain")
+      ?? storedGoalNode
+      ?? null;
+  }
+
+  return null;
 }
 
 function findVisibleSessionNodes(db, sessionId) {
@@ -1043,6 +1325,255 @@ function searchGraph(db, sessionId, query) {
   };
 }
 
+function buildRefineGraphSnapshot(graph) {
+  return {
+    mapName: graph.session?.goal || "Untitled map",
+    nodes: graph.nodes
+      .filter((node) => USER_CREATABLE_NODE_TYPES.has(node.type))
+      .map((node) => ({
+        id: node.id,
+        label: node.label,
+        type: node.type,
+        description: node.description || "",
+        summary: node.summary || "",
+        confidence: Number((node.confidence ?? 0).toFixed(2)),
+        evidenceCount: node.evidenceCount ?? 0,
+        masteryState: node.masteryState,
+        whyThisExists: node.whyThisExists
+      })),
+    edges: graph.edges.map((edge) => ({
+      key: edge.key,
+      source: edge.source,
+      target: edge.target,
+      type: edge.type,
+      label: edge.label,
+      confidence: Number((edge.confidence ?? 0).toFixed(2))
+    })),
+    artifacts: graph.artifacts.slice(-8).map((artifact) => ({
+      id: artifact.id,
+      title: artifact.title,
+      sourceType: artifact.sourceType,
+      excerpt: artifact.excerpt
+    }))
+  };
+}
+
+function buildRefineStatusMessage(summary) {
+  const parts = [];
+  if (summary.renamed) parts.push(`${summary.renamed} renamed`);
+  if (summary.retyped) parts.push(`${summary.retyped} retyped`);
+  if (summary.merged) parts.push(`${summary.merged} merged`);
+  if (summary.addedEdges) parts.push(`${summary.addedEdges} links added`);
+  if (summary.removedEdges) parts.push(`${summary.removedEdges} links removed`);
+  return parts.length ? `Refined map: ${parts.join(", ")}.` : "The refine pass did not find any safe graph changes to apply.";
+}
+
+async function refineSessionGraph({ db, openaiClient, sessionId }) {
+  if (!openaiClient) {
+    return {
+      status: 400,
+      body: { ok: false, error: "OpenAI is not configured, so refine is unavailable." }
+    };
+  }
+
+  const session = getSession(db, sessionId);
+  if (!session) {
+    return {
+      status: 404,
+      body: { ok: false, error: "session not found" }
+    };
+  }
+
+  const graph = buildSessionGraph(db, sessionId);
+  const snapshot = buildRefineGraphSnapshot(graph);
+
+  if (snapshot.nodes.length < 2) {
+    return {
+      status: 400,
+      body: { ok: false, error: "Add a few nodes before running refine." }
+    };
+  }
+
+  const refinePlan = await requestStructuredJson(openaiClient, {
+    model: "gpt-4o-mini",
+    label: "Graph refinement",
+    timeoutMs: 22000,
+    temperature: 0.2,
+    max_completion_tokens: 700,
+    messages: [
+      {
+        role: "system",
+        content: `You are refining a MindWeaver knowledge map.
+
+Improve coherence conservatively:
+- fix inaccurate, redundant, weak, or misplaced nodes when the current graph already provides enough evidence
+- preserve useful information whenever possible
+- prefer rename, retype, merge, and edge cleanup over destructive removal
+- do not invent new facts that are not already supported by the graph snapshot
+- do not output markdown fences
+
+Return JSON only with this shape:
+{
+  "summary": "short explanation of the refinement pass",
+  "rename_nodes": [
+    {
+      "id": "existing node id",
+      "label": "better label",
+      "description": "optional improved description",
+      "type": "goal|domain|skill|concept"
+    }
+  ],
+  "merge_nodes": [
+    {
+      "sourceId": "duplicate node id",
+      "targetId": "canonical node id",
+      "reason": "why the merge is safe"
+    }
+  ],
+  "add_edges": [
+    {
+      "sourceId": "existing node id",
+      "targetId": "existing node id",
+      "type": "contains|builds_on|prerequisite|related|contrasts|supports|needs|focuses_on",
+      "label": "edge label"
+    }
+  ],
+  "remove_edges": [
+    {
+      "key": "existing edge key",
+      "reason": "why the edge is weak, redundant, or misplaced"
+    }
+  ]
+}`
+      },
+      {
+        role: "user",
+        content: `Refine this MindWeaver map without deleting useful information unnecessarily.
+
+${JSON.stringify(snapshot, null, 2)}`
+      }
+    ]
+  }).catch(() => null);
+
+  if (!refinePlan || typeof refinePlan !== "object") {
+    return {
+      status: 502,
+      body: { ok: false, error: "MindWeaver could not produce a refinement plan right now." }
+    };
+  }
+
+  const summary = {
+    renamed: 0,
+    retyped: 0,
+    merged: 0,
+    addedEdges: 0,
+    removedEdges: 0,
+    warnings: []
+  };
+  const primaryGoal = getSessionGoal(db, sessionId);
+  const primaryGoalId = primaryGoal?.id ?? null;
+  const renameOps = Array.isArray(refinePlan.rename_nodes) ? refinePlan.rename_nodes.slice(0, 24) : [];
+  const mergeOps = Array.isArray(refinePlan.merge_nodes) ? refinePlan.merge_nodes.slice(0, 12) : [];
+  const addEdgeOps = Array.isArray(refinePlan.add_edges) ? refinePlan.add_edges.slice(0, 32) : [];
+  const removeEdgeOps = Array.isArray(refinePlan.remove_edges) ? refinePlan.remove_edges.slice(0, 32) : [];
+
+  for (const operation of renameOps) {
+    const node = db.data.nodes.find((entry) => entry.id === String(operation?.id ?? "").trim() && hasSessionMembership(entry, sessionId));
+    if (!node || !USER_CREATABLE_NODE_TYPES.has(node.type)) continue;
+
+    const nextType = String(operation?.type ?? node.type).trim().toLowerCase();
+    const nextLabel = sanitizeNodeLabelForType(nextType, operation?.label ?? node.label);
+    const nextDescription = String(operation?.description ?? "").trim();
+
+    if (!USER_CREATABLE_NODE_TYPES.has(nextType) || !nextLabel) continue;
+    if (primaryGoalId && node.id === primaryGoalId && nextType !== "goal") {
+      summary.warnings.push(`Skipped retyping the primary goal node "${node.label}".`);
+      continue;
+    }
+
+    if (nextLabel !== node.label) {
+      node.aliases ||= [];
+      if (node.label && !node.aliases.includes(node.label)) node.aliases.push(node.label);
+      node.label = nextLabel;
+      node.canonicalLabel = normalizeLabel(nextLabel);
+      summary.renamed += 1;
+    }
+
+    if (nextDescription) {
+      node.description = nextDescription;
+    }
+
+    if (nextType !== node.type) {
+      node.type = nextType;
+      summary.retyped += 1;
+    }
+
+    if (primaryGoalId && node.id === primaryGoalId) {
+      primaryGoal.title = node.label;
+      session.goal = node.label;
+    }
+
+    addHistoryEntry(node, {
+      kind: "graph-refined",
+      sessionId,
+      summary: String(refinePlan.summary ?? "").trim() || "Refined during map cleanup."
+    });
+  }
+
+  for (const operation of removeEdgeOps) {
+    const key = String(operation?.key ?? "").trim();
+    if (!key) continue;
+    const edge = db.data.edges.find((entry) => entry.key === key && hasSessionMembership(entry, sessionId));
+    if (!edge) continue;
+
+    edge.sessionIds = (edge.sessionIds ?? []).filter((entry) => entry !== sessionId);
+    summary.removedEdges += 1;
+  }
+
+  db.data.edges = db.data.edges.filter((edge) => (edge.sessionIds ?? []).length > 0);
+
+  for (const operation of addEdgeOps) {
+    const sourceId = String(operation?.sourceId ?? "").trim();
+    const targetId = String(operation?.targetId ?? "").trim();
+    const type = String(operation?.type ?? "").trim().toLowerCase();
+    const label = String(operation?.label ?? type).trim();
+    if (!sourceId || !targetId || sourceId === targetId || !label || !RELATIONSHIP_TYPES.has(type)) continue;
+
+    const source = db.data.nodes.find((entry) => entry.id === sourceId && hasSessionMembership(entry, sessionId));
+    const target = db.data.nodes.find((entry) => entry.id === targetId && hasSessionMembership(entry, sessionId));
+    if (!source || !target) continue;
+
+    ensureEdge(db, sourceId, targetId, label, type, 0.82, "ai", sessionId);
+    summary.addedEdges += 1;
+  }
+
+  for (const operation of mergeOps) {
+    const sourceId = String(operation?.sourceId ?? "").trim();
+    const targetId = String(operation?.targetId ?? "").trim();
+    if (!sourceId || !targetId || sourceId === targetId) continue;
+    if (primaryGoalId && sourceId === primaryGoalId) {
+      summary.warnings.push("Skipped merging the primary goal node into another node.");
+      continue;
+    }
+
+    const result = mergeNodeIntoTarget(db, sessionId, sourceId, targetId);
+    if (result.ok) summary.merged += 1;
+  }
+
+  await db.write();
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      summary: String(refinePlan.summary ?? "").trim(),
+      applied: summary,
+      message: buildRefineStatusMessage(summary),
+      graph: buildSessionGraph(db, sessionId)
+    }
+  };
+}
+
 function buildExtractiveAnswer(db, sessionId, question) {
   const search = searchGraph(db, sessionId, question);
   const top = search.results.slice(0, 5);
@@ -1130,6 +1661,352 @@ function validateIngestPayload(body, { allowSyntheticUrl = false } = {}) {
   return {
     ok: errors.length === 0,
     errors
+  };
+}
+
+function validateChatHistoryImportPayload(body) {
+  const errors = [];
+  const warningCounts = {
+    invalidNodes: 0,
+    duplicateNodes: 0,
+    invalidRelationships: 0,
+    relationshipsMissingNodes: 0,
+    selfRelationships: 0,
+    invalidHighlights: 0
+  };
+
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, errors: ["importData must be a JSON object."] };
+  }
+
+  const schemaVersion = String(body.schema_version ?? "").trim();
+  const provider = String(body.provider ?? "").trim().toLowerCase();
+  const title = String(body.title ?? "").trim().slice(0, 160);
+  const summary = String(body.summary ?? "").trim().slice(0, 4000);
+  const nodesRaw = Array.isArray(body.nodes) ? body.nodes : [];
+  const relationshipsRaw = Array.isArray(body.relationships) ? body.relationships : [];
+  const highlightsRaw = Array.isArray(body.conversation_highlights) ? body.conversation_highlights : [];
+
+  if (schemaVersion !== CHAT_IMPORT_SCHEMA_VERSION) {
+    errors.push(`schema_version must be "${CHAT_IMPORT_SCHEMA_VERSION}".`);
+  }
+
+  if (!CHAT_IMPORT_PROVIDERS.has(provider)) {
+    errors.push(`provider must be one of: ${[...CHAT_IMPORT_PROVIDERS].join(", ")}.`);
+  }
+
+  if (!title) errors.push("title is required.");
+  if (!summary) errors.push("summary is required.");
+  if (!nodesRaw.length) errors.push("nodes must contain at least one item.");
+
+  const nodesByLabel = new Map();
+
+  nodesRaw.forEach((rawNode, index) => {
+    if (!rawNode || typeof rawNode !== "object" || Array.isArray(rawNode)) {
+      warningCounts.invalidNodes += 1;
+      return;
+    }
+
+    const type = String(rawNode.type ?? "").trim().toLowerCase();
+    const label = normalizeLabel(rawNode.label);
+    const description = String(rawNode.description ?? "").trim().slice(0, 520);
+    const confidence = clampConfidence(Number(rawNode.confidence), type === "concept" ? 0.7 : 0.78);
+    const aliases = sanitizeShortList(rawNode.aliases, { maxItems: 12, maxLength: 100, excluded: [label] });
+    const evidence = sanitizeShortList(rawNode.evidence, { maxItems: 8, maxLength: 220 });
+
+    if (!CHAT_IMPORT_NODE_TYPES.has(type)) {
+      warningCounts.invalidNodes += 1;
+      return;
+    }
+
+    if (!label) {
+      warningCounts.invalidNodes += 1;
+      return;
+    }
+
+    const nextNode = {
+      type,
+      label,
+      description,
+      confidence,
+      aliases,
+      evidence
+    };
+    if (nodesByLabel.has(label)) {
+      warningCounts.duplicateNodes += 1;
+      nodesByLabel.set(label, mergeChatImportNode(nodesByLabel.get(label), nextNode));
+      return;
+    }
+
+    nodesByLabel.set(label, nextNode);
+  });
+
+  const nodes = [...nodesByLabel.values()];
+  const labelSet = new Set(nodesByLabel.keys());
+  if (!nodes.length) errors.push("nodes must contain at least one valid item.");
+
+  const relationships = [];
+  const relationshipSet = new Set();
+
+  relationshipsRaw.forEach((rawRelationship, index) => {
+    if (!rawRelationship || typeof rawRelationship !== "object" || Array.isArray(rawRelationship)) {
+      warningCounts.invalidRelationships += 1;
+      return;
+    }
+
+    const source = normalizeLabel(rawRelationship.source);
+    const target = normalizeLabel(rawRelationship.target);
+    const type = String(rawRelationship.type ?? "").trim().toLowerCase();
+    const label = String(rawRelationship.label ?? type).trim().slice(0, 80) || type;
+
+    if (!source || !target) {
+      warningCounts.invalidRelationships += 1;
+      return;
+    }
+
+    if (!CHAT_IMPORT_RELATIONSHIP_TYPES.has(type)) {
+      warningCounts.invalidRelationships += 1;
+      return;
+    }
+
+    if (!labelSet.has(source) || !labelSet.has(target)) {
+      warningCounts.relationshipsMissingNodes += 1;
+      return;
+    }
+
+    if (source === target) {
+      warningCounts.selfRelationships += 1;
+      return;
+    }
+
+    const dedupeKey = `${source}|${type}|${target}`;
+    if (relationshipSet.has(dedupeKey)) return;
+    relationshipSet.add(dedupeKey);
+    relationships.push({ source, target, type, label });
+  });
+
+  const conversationHighlights = [];
+
+  highlightsRaw.forEach((rawHighlight, index) => {
+    if (!rawHighlight || typeof rawHighlight !== "object" || Array.isArray(rawHighlight)) {
+      warningCounts.invalidHighlights += 1;
+      return;
+    }
+
+    const highlightTitle = String(rawHighlight.title ?? "").trim().slice(0, 120);
+    const highlightSummary = String(rawHighlight.summary ?? "").trim().slice(0, 520);
+    const concepts = sanitizeShortList(rawHighlight.concepts, { maxItems: 10, maxLength: 80 })
+      .map((concept) => normalizeLabel(concept))
+      .filter((concept) => labelSet.has(concept));
+
+    if (!highlightTitle || !highlightSummary) {
+      warningCounts.invalidHighlights += 1;
+      return;
+    }
+
+    conversationHighlights.push({
+      title: highlightTitle,
+      summary: highlightSummary,
+      concepts
+    });
+  });
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings: buildChatImportWarnings(warningCounts),
+    data: errors.length
+      ? null
+      : {
+          schemaVersion,
+          provider,
+          title,
+          summary,
+          nodes,
+          relationships,
+          conversationHighlights
+        }
+  };
+}
+
+async function ingestChatHistoryImport({ db, sessionId, importData }) {
+  const session = getSession(db, sessionId);
+  if (!session) {
+    return { status: 404, body: { ok: false, error: "session not found" } };
+  }
+
+  const serializedImport = JSON.stringify({
+    ...importData,
+    nodes: importData.nodes,
+    relationships: importData.relationships,
+    conversationHighlights: importData.conversationHighlights
+  });
+  const fingerprint = createHash("sha1").update(serializedImport).digest("hex").slice(0, 16);
+  const normalizedUrl = `mindweaver://${importData.provider}/chat-history/${fingerprint}`;
+  const sourceType = importData.provider;
+  const artifactTitle = importData.title;
+
+  let artifact = db.data.artifacts.find((entry) => entry.sessionId === sessionId && entry.url === normalizedUrl);
+  if (artifact) {
+    artifact.lastSeenAt = Date.now();
+    artifact.viewCount = (artifact.viewCount ?? 1) + 1;
+    await db.write();
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        deduped: true,
+        artifactId: artifact.id,
+        importedNodeCount: artifact.structuredImport?.nodeCount ?? importData.nodes.length,
+        importedRelationshipCount: artifact.structuredImport?.relationshipCount ?? importData.relationships.length
+      }
+    };
+  }
+
+  artifact = {
+    id: `artifact:${nanoid()}`,
+    sessionId,
+    url: normalizedUrl,
+    title: artifactTitle,
+    excerpt: importData.summary.slice(0, 280),
+    sourceType,
+    contentPreview: importData.summary,
+    contentLength: serializedImport.length,
+    addedAt: Date.now(),
+    lastSeenAt: Date.now(),
+    viewCount: 1,
+    ingestStatus: "classified",
+    classification: {
+      schemaVersion: importData.schemaVersion,
+      provider: importData.provider,
+      nodeCount: importData.nodes.length,
+      relationshipCount: importData.relationships.length
+    },
+    structuredImport: {
+      nodeCount: importData.nodes.length,
+      relationshipCount: importData.relationships.length,
+      conversationHighlights: importData.conversationHighlights,
+      summary: importData.summary
+    }
+  };
+  db.data.artifacts.push(artifact);
+
+  const sessionGoal = getSessionGoal(db, sessionId);
+  const goalNodeId = sessionGoal?.id ?? `session:${sessionId}`;
+  const labelToNode = new Map();
+  const importedNodes = {
+    domain: [],
+    skill: [],
+    concept: []
+  };
+  const conceptIds = new Set();
+  const importReason = `Imported from ${getSourceTypeLabel(sourceType)} "${artifactTitle}".`;
+
+  for (const importedNodeData of importData.nodes) {
+    const importedNode = ensureNode(db, `${importedNodeData.type}:${importedNodeData.label}`, importedNodeData.label, importedNodeData.type, {
+      createdBy: "import",
+      verified: false,
+      confidence: importedNodeData.confidence,
+      sessionId,
+      description: importedNodeData.description,
+      sourceType,
+      artifactId: artifact.id,
+      reason: importReason
+    });
+
+    importedNode.aliases ||= [];
+    for (const alias of importedNodeData.aliases) {
+      if (alias !== importedNode.label && !importedNode.aliases.includes(alias)) importedNode.aliases.push(alias);
+    }
+    if (importedNodeData.description && !importedNode.summary && importedNode.type === "concept") {
+      importedNode.summary = importedNodeData.description;
+    }
+
+    ensureSource(importedNode, sessionId, {
+      url: normalizedUrl,
+      title: artifact.title,
+      artifactId: artifact.id,
+      sourceType,
+      excerpt: importedNodeData.evidence[0] ?? importData.summary,
+      evidence: importedNodeData.evidence
+    });
+
+    addHistoryEntry(importedNode, {
+      kind: "chat-history-import",
+      sessionId,
+      artifactId: artifact.id,
+      sourceType,
+      title: artifact.title,
+      summary: importedNodeData.evidence[0]
+        ? `Imported from chat history: ${importedNodeData.evidence[0]}`
+        : `Imported from ${getSourceTypeLabel(sourceType).toLowerCase()} history.`
+    });
+
+    labelToNode.set(importedNodeData.label, importedNode);
+    importedNodes[importedNodeData.type].push(importedNode);
+    if (importedNodeData.type === "concept") conceptIds.add(importedNode.id);
+  }
+
+  for (const relationship of importData.relationships) {
+    const sourceNode = labelToNode.get(relationship.source);
+    const targetNode = labelToNode.get(relationship.target);
+    if (!sourceNode || !targetNode) continue;
+    ensureEdge(
+      db,
+      sourceNode.id,
+      targetNode.id,
+      relationship.label || relationship.type,
+      relationship.type,
+      clampConfidence((sourceNode.confidence + targetNode.confidence) / 2, 0.78),
+      "import",
+      sessionId
+    );
+  }
+
+  const primaryDomain = importedNodes.domain[0] ?? findVisibleSessionNodes(db, sessionId).find((node) => node.type === "domain") ?? null;
+  const primarySkill = importedNodes.skill[0] ?? findVisibleSessionNodes(db, sessionId).find((node) => node.type === "skill") ?? null;
+
+  for (const domainNode of importedNodes.domain) {
+    ensureEdge(db, goalNodeId, domainNode.id, sessionGoal ? "focuses_on" : "contains", sessionGoal ? "focuses_on" : "contains", 0.86, "import", sessionId);
+  }
+
+  for (const skillNode of importedNodes.skill) {
+    const hasIncomingDomain = db.data.edges.some((edge) => {
+      if (!hasSessionMembership(edge, sessionId) || edge.target !== skillNode.id) return false;
+      const sourceNode = db.data.nodes.find((node) => node.id === edge.source);
+      return sourceNode?.type === "domain";
+    });
+
+    if (!hasIncomingDomain && primaryDomain) {
+      ensureEdge(db, primaryDomain.id, skillNode.id, "contains", "contains", 0.84, "import", sessionId);
+    }
+  }
+
+  for (const conceptNode of importedNodes.concept) {
+    const hasIncomingSkill = db.data.edges.some((edge) => {
+      if (!hasSessionMembership(edge, sessionId) || edge.target !== conceptNode.id) return false;
+      const sourceNode = db.data.nodes.find((node) => node.id === edge.source);
+      return sourceNode?.type === "skill";
+    });
+
+    if (!hasIncomingSkill && primarySkill) {
+      ensureEdge(db, primarySkill.id, conceptNode.id, "builds_on", "builds_on", 0.84, "import", sessionId);
+    }
+  }
+
+  artifact.conceptIds = [...conceptIds];
+
+  await db.write();
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      deduped: false,
+      artifactId: artifact.id,
+      importedNodeCount: importData.nodes.length,
+      importedRelationshipCount: importData.relationships.length,
+      provider: importData.provider
+    }
   };
 }
 
@@ -1363,14 +2240,15 @@ Content preview: ${content.slice(0, OPENAI_CONTENT_LIMIT)}`
       label: "Source classification",
       timeoutMs: 15000,
       temperature: 0.2,
-      max_completion_tokens: 220,
+      max_completion_tokens: 360,
       messages: [
         {
           role: "system",
           content: `You are a knowledge graph classifier.
 ${buildGraphContext(db)}
 
-Classify this source into one domain, one skill, and 1-3 core concepts.
+Classify this source into one domain, one skill, and 1-8 core concepts.
+Do not reuse or snap to existing graph nodes just because they look similar. Generate fresh labels from the current source alone.
 Prefer concrete mechanisms, protocols, components, and practices over generic benefits.
 Avoid vague concepts like "scalability", "resilience", "performance", or "efficiency" unless the source is directly teaching that concept itself.
 If the source mentions named systems or implementation details, favor those specifics.
@@ -1389,11 +2267,23 @@ Content: ${content.slice(0, OPENAI_CONTENT_LIMIT)}`
   const sessionGoal = getSessionGoal(db, sessionId);
   const parentId = sessionGoal?.id ?? `session:${sessionId}`;
   const sourceReason = `Identified from ${getSourceTypeLabel(sourceType).toLowerCase()} "${artifact.title}".`;
+  const normalizedDomainLabel = sanitizeNodeLabelForType("domain", classification?.domain);
+  const normalizedSkillLabel = sanitizeNodeLabelForType("skill", classification?.skill);
+  const normalizedConceptLabels = [];
+  const seenConceptLabels = new Set();
 
-  if (classification?.domain) {
-    const domainLabel = normalizeLabel(classification.domain);
-    if (domainLabel) {
-      const domainNode = ensureNode(db, `domain:${domainLabel}`, domainLabel, "domain", {
+  for (const conceptName of Array.isArray(classification?.concepts) ? classification.concepts : []) {
+    const conceptLabel = sanitizeNodeLabelForType("concept", conceptName);
+    if (!conceptLabel || seenConceptLabels.has(conceptLabel)) continue;
+    seenConceptLabels.add(conceptLabel);
+    normalizedConceptLabels.push(conceptLabel);
+    if (normalizedConceptLabels.length >= 8) break;
+  }
+
+  if (normalizedDomainLabel) {
+    const domainNode = createSessionNode(db, {
+      type: "domain",
+      label: normalizedDomainLabel,
         createdBy: "ai",
         verified: false,
         sessionId,
@@ -1401,15 +2291,16 @@ Content: ${content.slice(0, OPENAI_CONTENT_LIMIT)}`
         artifactId: artifact.id,
         reason: sourceReason
       });
+    if (domainNode) {
       ensureEdge(db, parentId, domainNode.id, sessionGoal ? "focuses_on" : "contains", sessionGoal ? "focuses_on" : "contains", 0.8, sessionGoal ? "user" : "ai", sessionId);
       domain = { id: domainNode.id, label: domainNode.label };
     }
   }
 
-  if (domain && classification?.skill) {
-    const skillLabel = normalizeLabel(classification.skill);
-    if (skillLabel) {
-      const skillNode = ensureNode(db, `skill:${skillLabel}`, skillLabel, "skill", {
+  if (domain && normalizedSkillLabel) {
+    const skillNode = createSessionNode(db, {
+      type: "skill",
+      label: normalizedSkillLabel,
         createdBy: "ai",
         verified: false,
         sessionId,
@@ -1417,16 +2308,17 @@ Content: ${content.slice(0, OPENAI_CONTENT_LIMIT)}`
         artifactId: artifact.id,
         reason: sourceReason
       });
+    if (skillNode) {
       ensureEdge(db, domain.id, skillNode.id, "contains", "contains", 0.82, "ai", sessionId);
       skill = { id: skillNode.id, label: skillNode.label };
     }
   }
 
-  if (skill && Array.isArray(classification?.concepts)) {
-    for (const conceptName of classification.concepts) {
-      const conceptLabel = normalizeLabel(conceptName);
-      if (!conceptLabel) continue;
-      const conceptNode = ensureNode(db, `concept:${conceptLabel}`, conceptLabel, "concept", {
+  if (skill && normalizedConceptLabels.length) {
+    for (const conceptLabel of normalizedConceptLabels) {
+      const conceptNode = createSessionNode(db, {
+        type: "concept",
+        label: conceptLabel,
         createdBy: "ai",
         verified: false,
         sessionId,
@@ -1434,6 +2326,7 @@ Content: ${content.slice(0, OPENAI_CONTENT_LIMIT)}`
         artifactId: artifact.id,
         reason: sourceReason
       });
+      if (!conceptNode) continue;
       ensureEdge(db, skill.id, conceptNode.id, "builds_on", "builds_on", 0.85, "ai", sessionId);
       concepts.push({ id: conceptNode.id, label: conceptNode.label });
     }
@@ -1481,7 +2374,11 @@ Which concepts are directly taught by this source?`
     });
   }
 
-  artifact.classification = classification;
+  artifact.classification = {
+    domain: domain?.label ?? normalizedDomainLabel ?? null,
+    skill: skill?.label ?? normalizedSkillLabel ?? null,
+    concepts: concepts.map((concept) => concept.label)
+  };
   artifact.conceptIds = concepts.map((concept) => concept.id);
   artifact.ingestStatus = classification ? "classified" : "stored";
 
@@ -1492,7 +2389,7 @@ Which concepts are directly taught by this source?`
       ok: true,
       deduped: false,
       artifactId: artifact.id,
-      classification,
+      classification: artifact.classification,
       domain,
       skill,
       concepts
@@ -1504,6 +2401,7 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
   if (!db) throw new Error("createApp requires a db instance");
 
   const app = express();
+  const defaultJsonParser = express.json({ limit: "2mb" });
   app.disable("x-powered-by");
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -1517,7 +2415,33 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
       return callback(null, isAllowedCorsOrigin(origin));
     }
   }));
-  app.use(express.json({ limit: "2mb" }));
+  app.use((req, res, next) => {
+    if (req.method === "POST" && req.path === "/api/import-chat-history") {
+      let rawBody = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        rawBody += chunk;
+      });
+      req.on("end", () => {
+        if (!rawBody) {
+          req.body = {};
+          next();
+          return;
+        }
+
+        try {
+          req.body = JSON.parse(rawBody);
+          next();
+        } catch {
+          res.status(400).json({ ok: false, error: "Request body must be valid JSON." });
+        }
+      });
+      req.on("error", next);
+      return;
+    }
+
+    defaultJsonParser(req, res, next);
+  });
 
   app.get("/api/health", async (req, res) => {
     res.json({
@@ -1680,6 +2604,19 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
     res.json(goal);
   });
 
+  app.patch("/api/sessions/:id", async (req, res) => {
+    const result = renameSessionMap(db, req.params.id, req.body?.goal);
+    if (!result.ok) return res.status(404).json({ error: result.error });
+
+    await db.write();
+    res.json({
+      ok: true,
+      session: buildSessionSummary(db, result.session),
+      updatedPrimaryGoalNode: result.updatedPrimaryGoalNode,
+      sessionTarget: buildSessionTargetPayload(db)
+    });
+  });
+
   app.get("/api/goals/:sessionId", async (req, res) => {
     res.json(db.data.goals.filter((goal) => goal.sessionId === req.params.sessionId));
   });
@@ -1700,7 +2637,11 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
 
     repairSessionSelection(db);
     await db.write();
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      deletedSessionId: req.params.id,
+      sessionTarget: buildSessionTargetPayload(db)
+    });
   });
 
   app.delete("/api/sessions/:sessionId/artifacts/:artifactId", async (req, res) => {
@@ -1760,6 +2701,51 @@ export function createApp({ db, openaiClient = null, staticDir = null } = {}) {
         sourceType: req.body.sourceType ?? "note"
       }
     });
+
+    res.status(result.status).json(result.body);
+  });
+
+  app.get("/api/import-chat-history/template", async (req, res) => {
+    const provider = String(req.query.provider ?? "chatgpt").trim().toLowerCase();
+    if (!CHAT_IMPORT_PROVIDERS.has(provider)) {
+      return res.status(400).json({ error: `provider must be one of: ${[...CHAT_IMPORT_PROVIDERS].join(", ")}` });
+    }
+
+    const sessionId = String(req.query.sessionId ?? "").trim();
+    if (sessionId && !getSession(db, sessionId)) {
+      return res.status(404).json({ error: "session not found" });
+    }
+
+    const sessionGoal = sessionId
+      ? getSessionGoal(db, sessionId)?.title ?? getSession(db, sessionId)?.goal ?? ""
+      : "";
+
+    res.json({
+      ok: true,
+      provider,
+      schemaVersion: CHAT_IMPORT_SCHEMA_VERSION,
+      prompt: buildChatHistoryImportPrompt({ provider, sessionGoal })
+    });
+  });
+
+  app.post("/api/import-chat-history", async (req, res) => {
+    const sessionId = String(req.body?.sessionId ?? "").trim();
+    if (!sessionId) return res.status(400).json({ ok: false, errors: ["sessionId is required."] });
+
+    const validation = validateChatHistoryImportPayload(req.body?.importData);
+    if (!validation.ok) {
+      return res.status(400).json({ ok: false, errors: validation.errors });
+    }
+
+    const result = await ingestChatHistoryImport({
+      db,
+      sessionId,
+      importData: validation.data
+    });
+
+    if (result.body?.ok && validation.warnings?.length) {
+      result.body.warnings = validation.warnings;
+    }
 
     res.status(result.status).json(result.body);
   });
@@ -1882,6 +2868,19 @@ ${fallback.citations.map((citation) => `- ${citation.label}: ${citation.snippet 
     res.json(summary);
   });
 
+  app.post("/api/refine", async (req, res) => {
+    const sessionId = String(req.body?.sessionId ?? "").trim();
+    if (!sessionId) return res.status(400).json({ error: "sessionId required" });
+
+    const result = await refineSessionGraph({
+      db,
+      openaiClient,
+      sessionId
+    });
+
+    res.status(result.status).json(result.body);
+  });
+
   app.post("/api/prune", async (req, res) => {
     const sessionId = String(req.body?.sessionId ?? "").trim();
     const dryRun = req.body?.dryRun !== false;
@@ -1912,6 +2911,75 @@ ${fallback.citations.map((citation) => `- ${citation.label}: ${citation.snippet 
       count: candidates.length,
       candidates,
       graph: dryRun ? null : buildSessionGraph(db, sessionId)
+    });
+  });
+
+  app.post("/api/nodes", async (req, res) => {
+    const sessionId = String(req.body?.sessionId ?? "").trim();
+    const type = String(req.body?.type ?? "").trim().toLowerCase();
+    const label = String(req.body?.label ?? "").trim();
+    const description = String(req.body?.description ?? "").trim();
+    const parentId = String(req.body?.parentId ?? "").trim();
+
+    if (!sessionId || !type || !label) {
+      return res.status(400).json({ error: "sessionId, type, and label required" });
+    }
+
+    if (!USER_CREATABLE_NODE_TYPES.has(type)) {
+      return res.status(400).json({ error: `type must be one of: ${[...USER_CREATABLE_NODE_TYPES].join(", ")}` });
+    }
+
+    const session = getSession(db, sessionId);
+    if (!session) return res.status(404).json({ error: "session not found" });
+
+    let node = null;
+    let goal = null;
+
+    if (type === "goal" && !getSessionGoal(db, sessionId)) {
+      goal = createGoalForSession(db, sessionId, label, description);
+      if (!session.goal) {
+        session.goal = goal?.title ?? label;
+      }
+      node = goal ? db.data.nodes.find((entry) => entry.id === goal.id) ?? null : null;
+    } else {
+      node = createSessionNode(db, {
+        type,
+        label,
+        description,
+        createdBy: "user",
+        verified: type === "goal",
+        confidence: type === "goal" ? 1 : 0.92,
+        sessionId,
+        reason: `Created manually as a ${type} node from the map toolbar.`
+      });
+
+      const explicitParent = parentId
+        ? db.data.nodes.find((entry) => entry.id === parentId && hasSessionMembership(entry, sessionId))
+        : null;
+      const parentNode = explicitParent ?? findPreferredParentNode(db, sessionId, type);
+
+      if (node && parentNode && parentNode.id !== node.id) {
+        const edgeType = getDefaultRelationshipType(parentNode.type, type);
+        ensureEdge(db, parentNode.id, node.id, edgeType, edgeType, type === "goal" ? 1 : 0.95, "user", sessionId);
+      }
+    }
+
+    if (!node) {
+      return res.status(400).json({ error: "Could not create the requested node." });
+    }
+
+    addHistoryEntry(node, {
+      kind: "manual-node-created",
+      sessionId,
+      summary: `Created manually as a ${type} node.`
+    });
+
+    await db.write();
+    res.json({
+      ok: true,
+      goalCreated: Boolean(goal),
+      node: serializeNodeForSession(node, sessionId),
+      graph: buildSessionGraph(db, sessionId)
     });
   });
 

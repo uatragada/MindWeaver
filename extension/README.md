@@ -6,7 +6,7 @@ The Chrome extension is the on-demand capture surface for MindWeaver. It saves t
 
 - `Save Current Page` extracts the active tab and sends it to the local MindWeaver server.
 - The popup shows recent destination maps and lets you switch the shared active map used by both the Web UI and the extension.
-- If no map is active, the popup can create one first using the optional goal field.
+- If no map is active, the popup can create one first using the optional map-name field.
 - `Save selection to MindWeaver` in the right-click menu saves highlighted text as evidence.
 - `Open MindWeaver` opens the active map in the web UI, or the last-used map if capture is currently idle.
 - `End Active Map` ends the shared active map for future saves while preserving the saved graph.

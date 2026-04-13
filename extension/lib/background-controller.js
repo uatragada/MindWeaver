@@ -5,20 +5,21 @@ function createBackgroundController({
   client = createMindWeaverClient({ storageArea: chromeApi?.storage?.local }),
   now = () => Date.now()
 } = {}) {
-  async function setCaptureStatus({ status, title = "", message = "", targetLabel = "" }) {
+  async function setCaptureStatus({ status, title = "", message = "", targetLabel = "", targetId = "" }) {
     await chromeApi.storage.local.set({
       lastCaptureAt: now(),
       lastCaptureTitle: title,
       lastCaptureStatus: status,
       lastCaptureMessage: message,
-      lastCaptureTarget: targetLabel
+      lastCaptureTarget: targetLabel,
+      lastCaptureTargetId: targetId
     });
   }
 
   async function sendToMindWeaver(payload) {
     const targetState = await client.fetchJson("/api/session-target?limit=24");
     const sessionId = targetState.activeSessionId;
-    const targetLabel = targetState.activeSession?.goal || "Untitled map";
+    const targetLabel = String(targetState.activeSession?.goal ?? "").trim() || "Untitled map";
 
     if (!sessionId) {
       await setCaptureStatus({
@@ -40,7 +41,8 @@ function createBackgroundController({
       status: body.deduped ? "deduped" : "captured",
       title: payload.title || payload.url,
       message: `Saved to ${targetLabel}.`,
-      targetLabel
+      targetLabel,
+      targetId: sessionId
     });
 
     return { ok: true, status, body, target: targetState.activeSession };

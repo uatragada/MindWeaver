@@ -12,6 +12,10 @@ const lastCaptureEl = document.getElementById("lastCapture");
 let currentTargetState = null;
 const client = createMindWeaverClient({ storageArea: chrome.storage?.local });
 
+function getMapName(session, fallback = "Untitled map") {
+  return String(session?.goal ?? "").trim() || fallback;
+}
+
 function titleCaseStatus(value) {
   if (!value) return "";
   return value.charAt(0).toUpperCase() + value.slice(1);
@@ -31,8 +35,16 @@ async function getCaptureState() {
     "lastCaptureTitle",
     "lastCaptureStatus",
     "lastCaptureMessage",
-    "lastCaptureTarget"
+    "lastCaptureTarget",
+    "lastCaptureTargetId"
   ]);
+}
+
+async function clearDeletedCaptureTarget() {
+  await chrome.storage.local.set({
+    lastCaptureTarget: "",
+    lastCaptureTargetId: ""
+  });
 }
 
 function renderTargetOptions(targetState) {
@@ -48,7 +60,7 @@ function renderTargetOptions(targetState) {
   for (const session of sessions) {
     const option = document.createElement("option");
     option.value = session.id;
-    option.textContent = `${session.goal || "Untitled map"}${session.endedAt ? " (ended)" : ""}`;
+    option.textContent = `${getMapName(session)}${session.endedAt ? " (ended)" : ""}`;
     targetEl.append(option);
   }
 
@@ -64,8 +76,22 @@ async function refreshUI() {
 
   renderTargetOptions(targetState);
   const workspaceName = targetState.workspaces?.[0]?.name || "Personal Learning";
-  const activeLabel = targetState.activeSession?.goal || "No active map selected";
-  const lastLabel = targetState.lastSession?.goal || "None yet";
+  const activeLabel = getMapName(targetState.activeSession, "No active map selected");
+  const lastLabel = getMapName(targetState.lastSession, "None yet");
+  const validSessionIds = new Set((targetState.sessions ?? []).map((session) => session.id));
+  if (targetState.activeSessionId) validSessionIds.add(targetState.activeSessionId);
+  if (targetState.lastSessionId) validSessionIds.add(targetState.lastSessionId);
+  const captureTargetStillExists = captureState.lastCaptureTargetId
+    ? validSessionIds.has(captureState.lastCaptureTargetId)
+    : (captureState.lastCaptureTarget
+      ? (targetState.sessions ?? []).some((session) => getMapName(session) === captureState.lastCaptureTarget)
+      : true);
+
+  if (!captureTargetStillExists && (captureState.lastCaptureTarget || captureState.lastCaptureTargetId)) {
+    await clearDeletedCaptureTarget();
+    captureState.lastCaptureTarget = "";
+    captureState.lastCaptureTargetId = "";
+  }
 
   statusEl.textContent = activeLabel;
   workspaceEl.textContent = `${workspaceName} • Last used ${lastLabel}`;
@@ -101,7 +127,7 @@ async function ensureActiveTarget() {
   const targetState = await client.fetchJson("/api/session-target?limit=24");
   if (targetState.activeSessionId) return targetState;
   if (!goalEl.value.trim()) {
-    throw new Error("Choose an existing map or enter a goal to create one before saving.");
+    throw new Error("Choose an existing map or enter a map name to create one before saving.");
   }
 
   await createSession();

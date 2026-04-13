@@ -1,448 +1,49 @@
-import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
+import SelectControl from "./components/controls/SelectControl.jsx";
+import MapOverviewCard from "./components/panels/MapOverviewCard.jsx";
+import MapStructurePanel from "./components/panels/MapStructurePanel.jsx";
+import { useLocalStorageState } from "./hooks/useLocalStorageState.js";
+import { useSessionRoute } from "./hooks/useSessionRoute.js";
+import { API_BASE, fetchJson } from "./lib/api.js";
+import {
+  CHAT_IMPORT_PROVIDER_OPTIONS,
+  DEFAULT_TAB_VIEW,
+  EMPTY_IMPORT_FORM,
+  EMPTY_QUIZ_STATE,
+  MASTERY_OPTIONS,
+  NODE_TYPE_OPTIONS,
+  OPEN_TABS_STORAGE_KEY,
+  RELATIONSHIP_TYPE_OPTIONS,
+  RIGHT_PANEL_LABELS,
+  SOURCE_TYPE_OPTIONS,
+  STATS_REFRESH_MS,
+  TAB_VIEW_STORAGE_KEY,
+  visibleNodeTypes
+} from "./lib/app-constants.js";
+import { getChatHistoryImportPreview } from "./lib/chat-import-preview.js";
+import {
+  createNodeCollisionForce,
+  drawRoundedRect,
+  getNodeMetrics,
+  NODE_HIERARCHY_LEVELS
+} from "./lib/graph-rendering.js";
+import {
+  describeReviewDate,
+  downloadTextFile,
+  formatSourceTypeLabel,
+  formatTimestamp,
+  getMapName,
+  getSafeFileName,
+  groupVerificationResults
+} from "./lib/formatting.js";
 import "./app.css";
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? (window.location.port === "5197" ? "http://localhost:3001" : window.location.origin);
-const STATS_REFRESH_MS = 35_000;
-const visibleNodeTypes = ["goal", "domain", "skill", "concept"];
-const OPEN_TABS_STORAGE_KEY = "mindweaver:open-map-tabs:v1";
-const TAB_VIEW_STORAGE_KEY = "mindweaver:tab-view-state:v1";
-const EMPTY_QUIZ_STATE = { quiz: [], message: "" };
-const EMPTY_IMPORT_FORM = {
-  sourceType: "note",
-  title: "",
-  url: "",
-  content: ""
-};
-const DEFAULT_TAB_VIEW = {
-  selectedNodeId: null,
-  rightPanel: "inspector",
-  leftRailMinimized: false,
-  rightRailMinimized: true,
-  nodeSearch: "",
-  nodeTypeFilter: "all"
-};
-
-function getSessionIdFromLocation() {
-  return new URLSearchParams(window.location.search).get("sessionId");
-}
-
-function buildSessionUrl(sessionId) {
-  const url = new URL(window.location.href);
-  if (sessionId) {
-    url.searchParams.set("sessionId", sessionId);
-  } else {
-    url.searchParams.delete("sessionId");
-  }
-  return `${url.pathname}${url.search}${url.hash}`;
-}
-
-function readStoredJson(key, fallbackValue) {
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallbackValue;
-  } catch {
-    return fallbackValue;
-  }
-}
-
-function useLocalStorageState(key, initialValue) {
-  const [state, setState] = useState(() => {
-    const fallbackValue = typeof initialValue === "function" ? initialValue() : initialValue;
-    return readStoredJson(key, fallbackValue);
-  });
-
-  useEffect(() => {
-    window.localStorage.setItem(key, JSON.stringify(state));
-  }, [key, state]);
-
-  return [state, setState];
-}
-
-function useSessionRoute() {
-  const [sessionId, setSessionId] = useState(() => getSessionIdFromLocation());
-
-  useEffect(() => {
-    const handlePopState = () => {
-      setSessionId(getSessionIdFromLocation());
-    };
-
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
-
-  const navigateToSession = useCallback((nextSessionId, { replace = false } = {}) => {
-    const targetSessionId = nextSessionId || null;
-    const nextUrl = buildSessionUrl(targetSessionId);
-    const method = replace ? "replaceState" : "pushState";
-    window.history[method]({}, "", nextUrl);
-    setSessionId(targetSessionId);
-  }, []);
-
-  return [sessionId, navigateToSession];
-}
-
-async function fetchJson(url, options) {
-  const response = await fetch(url, options);
-  const payload = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(payload.error || payload.reason || `Request failed with status ${response.status}`);
-  }
-
-  return payload;
-}
-
-function groupVerificationResults(quiz, answers) {
-  const buckets = {
-    correct: [],
-    incorrect: []
-  };
-
-  for (const question of quiz) {
-    const selectedIndex = answers[question.id];
-    if (selectedIndex === undefined) continue;
-    const bucket = selectedIndex === question.correct ? "correct" : "incorrect";
-    buckets[bucket].push(question.conceptId);
-  }
-
-  return buckets;
-}
-
-function formatTimestamp(value) {
-  if (!value) return "Not scheduled";
-  const date = new Date(value);
-  return date.toLocaleString();
-}
-
-function describeReviewDate(value) {
-  if (!value) return "Not scheduled";
-  return value <= Date.now() ? "Due now" : `Next review: ${new Date(value).toLocaleDateString()}`;
-}
-
-function getSafeFileName(value) {
-  return String(value || "mindweaver-map")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "mindweaver-map";
-}
-
-function downloadTextFile(content, fileName, mimeType) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-const NODE_PALETTE = {
-  goal: { fill: "#f4f4f4", stroke: "#ffffff", minWidth: 188, minHeight: 62, maxTextWidth: 168, fontSize: 11, lineHeight: 13, maxLines: 3 },
-  domain: { fill: "#d8d8d8", stroke: "#f4f4f4", minWidth: 148, minHeight: 48, maxTextWidth: 128, fontSize: 10.5, lineHeight: 13, maxLines: 2 },
-  skill: { fill: "#bcbcbc", stroke: "#e2e2e2", minWidth: 128, minHeight: 44, maxTextWidth: 108, fontSize: 10, lineHeight: 12, maxLines: 2 },
-  concept: { fill: "#a6a6a6", stroke: "#d8d8d8", minWidth: 122, minHeight: 42, maxTextWidth: 102, fontSize: 10, lineHeight: 12, maxLines: 2 }
-};
-
-const FALLBACK_NODE_STYLE = { fill: "#c9c9c9", stroke: "#f4f4f4", minWidth: 118, minHeight: 42, maxTextWidth: 98, fontSize: 10, lineHeight: 12, maxLines: 2 };
-
-const RIGHT_PANEL_LABELS = {
-  inspector: "Inspector",
-  assistant: "Graph Assistant",
-  actions: "Next Actions",
-  review: "Review Queue",
-  plan: "Study Plan",
-  progress: "Progress",
-  import: "Import Sources",
-  gaps: "Gap Analysis",
-  quiz: "Quiz Loop"
-};
-
-const NODE_TYPE_OPTIONS = [
-  { value: "all", label: "All Types" },
-  { value: "goal", label: "Goals" },
-  { value: "domain", label: "Domains" },
-  { value: "skill", label: "Skills" },
-  { value: "concept", label: "Concepts" }
-];
-
-const SOURCE_TYPE_OPTIONS = [
-  { value: "note", label: "Manual Note" },
-  { value: "pdf", label: "PDF Text" },
-  { value: "youtube", label: "YouTube Transcript" },
-  { value: "doc", label: "Document" },
-  { value: "markdown", label: "Markdown Notes" },
-  { value: "bookmark", label: "Bookmark" },
-  { value: "repo", label: "Repository / Docs" },
-  { value: "highlight", label: "Highlight" }
-];
-
-const MASTERY_OPTIONS = [
-  { value: "new", label: "New" },
-  { value: "seen", label: "Seen" },
-  { value: "understood", label: "Understood" },
-  { value: "verified", label: "Verified" }
-];
-
-const RELATIONSHIP_TYPE_OPTIONS = [
-  { value: "related", label: "Related" },
-  { value: "prerequisite", label: "Prerequisite" },
-  { value: "supports", label: "Supports" },
-  { value: "contrasts", label: "Contrasts" }
-];
-
-function getSelectMenuPlacement(trigger, optionCount) {
-  if (!trigger) return "down";
-
-  const triggerRect = trigger.getBoundingClientRect();
-  let boundaryTop = 0;
-  let boundaryBottom = window.innerHeight;
-  let parent = trigger.parentElement;
-
-  while (parent) {
-    const styles = window.getComputedStyle(parent);
-    const clipping = `${styles.overflow} ${styles.overflowY}`;
-
-    if (/(auto|scroll|hidden|clip)/.test(clipping)) {
-      const parentRect = parent.getBoundingClientRect();
-      boundaryTop = Math.max(boundaryTop, parentRect.top);
-      boundaryBottom = Math.min(boundaryBottom, parentRect.bottom);
-      break;
-    }
-
-    parent = parent.parentElement;
-  }
-
-  const estimatedMenuHeight = Math.min(260, Math.max(56, optionCount * 42 + 12));
-  const spaceBelow = boundaryBottom - triggerRect.bottom;
-  const spaceAbove = triggerRect.top - boundaryTop;
-
-  return spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow ? "up" : "down";
-}
-
-function SelectControl({ value, onChange, options, className = "", ariaLabel = "Select option" }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [menuPlacement, setMenuPlacement] = useState("down");
-  const triggerRef = useRef(null);
-  const selectedOption = options.find((option) => option.value === value) ?? options[0];
-
-  function handleTriggerClick() {
-    if (!isOpen) setMenuPlacement(getSelectMenuPlacement(triggerRef.current, options.length));
-    setIsOpen((current) => !current);
-  }
-
-  return (
-    <div
-      className={`select-control ${isOpen ? "is-open" : ""} ${isOpen && menuPlacement === "up" ? "is-up" : ""} ${className}`}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) setIsOpen(false);
-      }}
-    >
-      <button
-        ref={triggerRef}
-        type="button"
-        className="text-input select-trigger"
-        aria-label={ariaLabel}
-        aria-haspopup="listbox"
-        aria-expanded={isOpen}
-        onClick={handleTriggerClick}
-      >
-        <span>{selectedOption?.label ?? "Select"}</span>
-      </button>
-      {isOpen ? (
-        <div className="select-menu" role="listbox" tabIndex={-1}>
-          {options.map((option) => (
-            <button
-              key={`${option.value}-${option.label}`}
-              type="button"
-              className={`select-option ${option.value === value ? "is-selected" : ""}`}
-              role="option"
-              aria-selected={option.value === value}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                onChange(option.value);
-                setIsOpen(false);
-              }}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function drawRoundedRect(ctx, x, y, width, height, radius = 8) {
-  const safeRadius = Math.min(radius, width / 2, height / 2);
-
-  ctx.beginPath();
-  ctx.moveTo(x + safeRadius, y);
-  ctx.lineTo(x + width - safeRadius, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
-  ctx.lineTo(x + width, y + height - safeRadius);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
-  ctx.lineTo(x + safeRadius, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
-  ctx.lineTo(x, y + safeRadius);
-  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
-  ctx.closePath();
-}
-
-function splitLongWord(ctx, word, maxWidth) {
-  const parts = [];
-  let part = "";
-
-  for (const char of word) {
-    const candidate = `${part}${char}`;
-    if (!part || ctx.measureText(candidate).width <= maxWidth) {
-      part = candidate;
-    } else {
-      parts.push(part);
-      part = char;
-    }
-  }
-
-  if (part) parts.push(part);
-  return parts;
-}
-
-function truncateTextToWidth(ctx, text, maxWidth) {
-  const ellipsis = "...";
-  const value = String(text || "");
-
-  if (ctx.measureText(value).width <= maxWidth) return value;
-
-  let output = value;
-  while (output.length > 1 && ctx.measureText(`${output}${ellipsis}`).width > maxWidth) {
-    output = output.slice(0, -1);
-  }
-
-  return `${output.trimEnd()}${ellipsis}`;
-}
-
-function appendEllipsisToWidth(ctx, text, maxWidth) {
-  const ellipsis = "...";
-  let output = String(text || "");
-
-  while (output.length > 1 && ctx.measureText(`${output}${ellipsis}`).width > maxWidth) {
-    output = output.slice(0, -1);
-  }
-
-  return `${output.trimEnd()}${ellipsis}`;
-}
-
-function wrapNodeLabel(ctx, label, maxWidth) {
-  const words = String(label || "Untitled").trim().split(/\s+/).filter(Boolean);
-  const lines = [];
-  let line = "";
-
-  for (const word of words.length ? words : ["Untitled"]) {
-    const candidate = line ? `${line} ${word}` : word;
-
-    if (ctx.measureText(candidate).width <= maxWidth) {
-      line = candidate;
-      continue;
-    }
-
-    if (line) lines.push(line);
-
-    if (ctx.measureText(word).width <= maxWidth) {
-      line = word;
-    } else {
-      const parts = splitLongWord(ctx, word, maxWidth);
-      lines.push(...parts.slice(0, -1));
-      line = parts.at(-1) ?? "";
-    }
-  }
-
-  if (line) lines.push(line);
-  return lines.length ? lines : ["Untitled"];
-}
-
-function getNodeMetrics(node, ctx) {
-  const style = NODE_PALETTE[node.type] ?? FALLBACK_NODE_STYLE;
-  const paddingX = 10;
-  const paddingY = 8;
-
-  ctx.font = `700 ${style.fontSize}px Segoe UI`;
-
-  const rawLines = wrapNodeLabel(ctx, node.label, style.maxTextWidth);
-  const lines = rawLines.slice(0, style.maxLines).map((line) => truncateTextToWidth(ctx, line, style.maxTextWidth));
-
-  if (rawLines.length > style.maxLines && lines.length) {
-    lines[lines.length - 1] = appendEllipsisToWidth(ctx, lines[lines.length - 1], style.maxTextWidth);
-  }
-
-  const textWidth = Math.max(...lines.map((line) => ctx.measureText(line).width));
-  const width = Math.ceil(Math.max(style.minWidth, textWidth + paddingX * 2));
-  const height = Math.ceil(Math.max(style.minHeight, lines.length * style.lineHeight + paddingY * 2));
-
-  return {
-    ...style,
-    lines,
-    width,
-    height,
-    x: node.x - width / 2,
-    y: node.y - height / 2,
-    textY: node.y - ((lines.length - 1) * style.lineHeight) / 2
-  };
-}
-
-function getNodeCollisionRadius(node) {
-  const style = NODE_PALETTE[node.type] ?? FALLBACK_NODE_STYLE;
-  return Math.max(style.minWidth, style.minHeight) / 2 + 34;
-}
-
-function createNodeCollisionForce() {
-  let nodes = [];
-  let radii = [];
-
-  function force(alpha) {
-    for (let i = 0; i < nodes.length; i += 1) {
-      for (let j = i + 1; j < nodes.length; j += 1) {
-        const left = nodes[i];
-        const right = nodes[j];
-        const minDistance = radii[i] + radii[j];
-        let dx = (right.x ?? 0) - (left.x ?? 0);
-        let dy = (right.y ?? 0) - (left.y ?? 0);
-        let distance = Math.hypot(dx, dy);
-
-        if (distance === 0) {
-          dx = 0.01 * (j - i);
-          dy = 0.01;
-          distance = Math.hypot(dx, dy);
-        }
-
-        if (distance >= minDistance) continue;
-
-        const push = ((minDistance - distance) / distance) * alpha * 0.68;
-        const x = dx * push;
-        const y = dy * push;
-
-        left.vx = (left.vx ?? 0) - x;
-        left.vy = (left.vy ?? 0) - y;
-        right.vx = (right.vx ?? 0) + x;
-        right.vy = (right.vy ?? 0) + y;
-      }
-    }
-  }
-
-  force.initialize = (nextNodes) => {
-    nodes = nextNodes;
-    radii = nodes.map(getNodeCollisionRadius);
-  };
-
-  return force;
-}
 
 export default function App() {
   const [sessionId, navigateToSession] = useSessionRoute();
   const fgRef = useRef(null);
   const graphContainerRef = useRef(null);
+  const rightRailRef = useRef(null);
   const tabViewHydrationRef = useRef(null);
   const sessionCacheHydrationRef = useRef(null);
   const graphFitTimersRef = useRef([]);
@@ -471,7 +72,10 @@ export default function App() {
   const [homeErrorMessage, setHomeErrorMessage] = useState("");
   const [isLoadingGraph, setIsLoadingGraph] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [isCreatingGoalNode, setIsCreatingGoalNode] = useState(false);
   const [isCreatingDemo, setIsCreatingDemo] = useState(false);
+  const [isRenamingMap, setIsRenamingMap] = useState(false);
+  const [isEditingMapName, setIsEditingMapName] = useState(false);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
   const [isEndingSession, setIsEndingSession] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -479,15 +83,25 @@ export default function App() {
   const [learnMoreCopy, setLearnMoreCopy] = useState("");
   const [isReviewing, setIsReviewing] = useState(false);
   const [isLoadingGaps, setIsLoadingGaps] = useState(false);
+  const [isRefiningMap, setIsRefiningMap] = useState(false);
   const [gapSummary, setGapSummary] = useState(null);
   const [isLoadingQuiz, setIsLoadingQuiz] = useState(false);
   const [quizState, setQuizState] = useState(EMPTY_QUIZ_STATE);
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizResult, setQuizResult] = useState(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [isImportingChatHistory, setIsImportingChatHistory] = useState(false);
+  const [isLoadingChatImportPrompt, setIsLoadingChatImportPrompt] = useState(false);
   const [importForm, setImportForm] = useState(EMPTY_IMPORT_FORM);
+  const [chatImportProvider, setChatImportProvider] = useState("chatgpt");
+  const [chatImportPrompt, setChatImportPrompt] = useState("");
+  const [chatImportSchemaVersion, setChatImportSchemaVersion] = useState("mindweaver.chat_import.v1");
+  const [chatImportJson, setChatImportJson] = useState("");
+  const [chatImportErrorMessage, setChatImportErrorMessage] = useState("");
   const [startGoal, setStartGoal] = useState("");
   const [tabComposerGoal, setTabComposerGoal] = useState("");
+  const [mapNameDraft, setMapNameDraft] = useState("");
+  const [goalNodeDraft, setGoalNodeDraft] = useState("");
   const [graphSize, setGraphSize] = useState({ width: 900, height: 640 });
   const [nodeSearch, setNodeSearch] = useState("");
   const [nodeTypeFilter, setNodeTypeFilter] = useState("all");
@@ -515,6 +129,50 @@ export default function App() {
   const [isDeletingArtifact, setIsDeletingArtifact] = useState(false);
   const [isGraphViewportReady, setIsGraphViewportReady] = useState(false);
   const deferredNodeSearch = useDeferredValue(nodeSearch);
+  const chatHistoryImportPreview = useMemo(() => getChatHistoryImportPreview(chatImportJson), [chatImportJson]);
+
+  const dropSessionLocally = useCallback((removedSessionId) => {
+    if (!removedSessionId) return;
+
+    setOpenTabs((current) => current.filter((entry) => entry !== removedSessionId));
+    setTabViewState((current) => {
+      const next = { ...current };
+      delete next[removedSessionId];
+      return next;
+    });
+    setSessionCache((current) => {
+      const next = { ...current };
+      delete next[removedSessionId];
+      return next;
+    });
+  }, [setOpenTabs, setTabViewState]);
+
+  const applyTargetStateSnapshot = useCallback((targetState, { preserveSessionId = null } = {}) => {
+    const normalizedState = {
+      activeSessionId: targetState?.activeSessionId ?? null,
+      lastSessionId: targetState?.lastSessionId ?? null,
+      activeSession: targetState?.activeSession ?? null,
+      lastSession: targetState?.lastSession ?? null,
+      sessions: targetState?.sessions ?? [],
+      workspaces: targetState?.workspaces ?? []
+    };
+    const validSessionIds = new Set(normalizedState.sessions.map((session) => session.id));
+    if (normalizedState.activeSessionId) validSessionIds.add(normalizedState.activeSessionId);
+    if (normalizedState.lastSessionId) validSessionIds.add(normalizedState.lastSessionId);
+    if (preserveSessionId) validSessionIds.add(preserveSessionId);
+
+    setRecentSessions(normalizedState.sessions);
+    setSessionTargetState(normalizedState);
+    setOpenTabs((current) => current.filter((entry) => validSessionIds.has(entry)));
+    setTabViewState((current) => Object.fromEntries(
+      Object.entries(current).filter(([entry]) => validSessionIds.has(entry))
+    ));
+    setSessionCache((current) => Object.fromEntries(
+      Object.entries(current).filter(([entry]) => validSessionIds.has(entry))
+    ));
+
+    return normalizedState;
+  }, [setOpenTabs, setTabViewState]);
 
   const loadHomeData = useCallback(async () => {
     setHomeErrorMessage("");
@@ -525,12 +183,11 @@ export default function App() {
         fetchJson(`${API_BASE}/api/session-target?limit=24`)
       ]);
       setHealthState(health);
-      setRecentSessions(targetState.sessions ?? []);
-      setSessionTargetState(targetState);
+      applyTargetStateSnapshot(targetState, { preserveSessionId: sessionId });
     } catch (error) {
       setHomeErrorMessage(`${error.message}. Start the MindWeaver app, then refresh this page.`);
     }
-  }, []);
+  }, [applyTargetStateSnapshot, sessionId]);
 
   const syncActiveSessionTarget = useCallback(async (nextSessionId) => {
     const targetState = await fetchJson(`${API_BASE}/api/session-target`, {
@@ -538,10 +195,9 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId: nextSessionId ?? null, limit: 24 })
     });
-    setRecentSessions(targetState.sessions ?? []);
-    setSessionTargetState(targetState);
+    applyTargetStateSnapshot(targetState, { preserveSessionId: nextSessionId ?? sessionId ?? null });
     return targetState;
-  }, []);
+  }, [applyTargetStateSnapshot, sessionId]);
 
   useEffect(() => {
     void loadHomeData();
@@ -551,19 +207,6 @@ export default function App() {
 
     return () => window.clearInterval(intervalId);
   }, [loadHomeData]);
-
-  useEffect(() => {
-    const validSessionIds = new Set(recentSessions.map((session) => session.id));
-    if (sessionId) validSessionIds.add(sessionId);
-
-    setOpenTabs((current) => current.filter((entry) => validSessionIds.has(entry)));
-    setTabViewState((current) => Object.fromEntries(
-      Object.entries(current).filter(([entry]) => validSessionIds.has(entry))
-    ));
-    setSessionCache((current) => Object.fromEntries(
-      Object.entries(current).filter(([entry]) => validSessionIds.has(entry))
-    ));
-  }, [recentSessions, sessionId, setOpenTabs, setTabViewState]);
 
   const openSessionTab = useCallback((nextSessionId) => {
     if (!nextSessionId) return;
@@ -605,23 +248,43 @@ export default function App() {
     });
   }, [sessionId, setOpenTabs, syncActiveSessionTarget]);
 
-  useEffect(() => {
-    if (!graphContainerRef.current) return;
+  useLayoutEffect(() => {
+    const element = graphContainerRef.current;
+    if (!element) return undefined;
 
-    const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect;
+    const updateGraphSize = () => {
+      const rect = element.getBoundingClientRect();
       setGraphSize({
-        width: Math.max(320, Math.floor(width)),
-        height: Math.max(420, Math.floor(height))
+        width: Math.max(320, Math.floor(rect.width)),
+        height: Math.max(420, Math.floor(rect.height))
       });
+    };
+
+    updateGraphSize();
+    const observer = new ResizeObserver(() => {
+      updateGraphSize();
+    });
+    observer.observe(element);
+
+    let secondFrame = null;
+    const initialFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(updateGraphSize);
     });
 
-    observer.observe(graphContainerRef.current);
-    return () => observer.disconnect();
-  }, []);
+    window.addEventListener("resize", updateGraphSize);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateGraphSize);
+      window.cancelAnimationFrame(initialFrame);
+      if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionId) {
+      setMapNameDraft("");
+      setIsEditingMapName(false);
       setGraphState(null);
       setProgressState(null);
       setGapSummary(null);
@@ -639,6 +302,10 @@ export default function App() {
       setRightRailMinimized(DEFAULT_TAB_VIEW.rightRailMinimized);
       setNodeSearch(DEFAULT_TAB_VIEW.nodeSearch);
       setNodeTypeFilter(DEFAULT_TAB_VIEW.nodeTypeFilter);
+      setChatImportPrompt("");
+      setChatImportJson("");
+      setChatImportErrorMessage("");
+      setGoalNodeDraft("");
       setIsGraphViewportReady(false);
       return;
     }
@@ -664,6 +331,9 @@ export default function App() {
     setRightRailMinimized(cachedTabView.rightRailMinimized ?? DEFAULT_TAB_VIEW.rightRailMinimized);
     setNodeSearch(cachedTabView.nodeSearch ?? DEFAULT_TAB_VIEW.nodeSearch);
     setNodeTypeFilter(cachedTabView.nodeTypeFilter ?? DEFAULT_TAB_VIEW.nodeTypeFilter);
+    setChatImportPrompt("");
+    setChatImportJson("");
+    setChatImportErrorMessage("");
   }, [sessionId]);
 
   useEffect(() => {
@@ -743,11 +413,37 @@ export default function App() {
         return data.nodes.some((node) => node.id === current) ? current : data.reviewQueue?.[0]?.id ?? data.nodes?.[0]?.id ?? null;
       });
     } catch (error) {
+      if (error.status === 404) {
+        dropSessionLocally(targetSessionId);
+
+        try {
+          const targetState = await fetchJson(`${API_BASE}/api/session-target?limit=24`);
+          const nextTarget = applyTargetStateSnapshot(targetState);
+          if (targetSessionId === sessionId) {
+            setGraphState(null);
+            setProgressState(null);
+            setGapSummary(null);
+            setSelectedNodeId(null);
+            setStatusMessage("That map was removed, so MindWeaver switched you to an available map.");
+            startTransition(() => {
+              navigateToSession(nextTarget.activeSessionId ?? nextTarget.lastSessionId ?? null, { replace: true });
+            });
+          }
+        } catch {
+          if (targetSessionId === sessionId) {
+            startTransition(() => {
+              navigateToSession(null, { replace: true });
+            });
+          }
+        }
+        return;
+      }
+
       setErrorMessage(error.message);
     } finally {
       setIsLoadingGraph(false);
     }
-  }, [sessionId]);
+  }, [applyTargetStateSnapshot, dropSessionLocally, navigateToSession, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return undefined;
@@ -810,6 +506,34 @@ export default function App() {
     }
   };
 
+  const handleRenameMap = async () => {
+    if (!sessionId || !hasMapNameChanges) return;
+
+    setIsRenamingMap(true);
+    setErrorMessage("");
+
+    try {
+      const result = await fetchJson(`${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ goal: trimmedMapNameDraft || null })
+      });
+      setMapNameDraft(String(result.session?.goal ?? ""));
+      setIsEditingMapName(false);
+      setStatusMessage(
+        result.updatedPrimaryGoalNode
+          ? "Map name updated and synced with the primary goal node."
+          : "Map name updated."
+      );
+      applyTargetStateSnapshot(result.sessionTarget ?? {}, { preserveSessionId: sessionId });
+      await loadGraph(sessionId);
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setIsRenamingMap(false);
+    }
+  };
+
   const handleEndSession = async () => {
     if (!sessionId) return;
     setIsEndingSession(true);
@@ -837,9 +561,13 @@ export default function App() {
     setErrorMessage("");
 
     try {
-      await fetchJson(`${API_BASE}/api/sessions/${encodeURIComponent(deletingSessionId)}`, { method: "DELETE" });
-      closeSessionTab(deletingSessionId);
-      await loadHomeData();
+      const result = await fetchJson(`${API_BASE}/api/sessions/${encodeURIComponent(deletingSessionId)}`, { method: "DELETE" });
+      dropSessionLocally(deletingSessionId);
+      const nextTarget = applyTargetStateSnapshot(result.sessionTarget ?? {});
+      setStatusMessage("Map deleted.");
+      startTransition(() => {
+        navigateToSession(nextTarget.activeSessionId ?? nextTarget.lastSessionId ?? null, { replace: true });
+      });
     } catch (error) {
       setErrorMessage(error.message);
     } finally {
@@ -861,7 +589,7 @@ export default function App() {
 
       const isJson = format === "json";
       const content = isJson ? JSON.stringify(await response.json(), null, 2) : await response.text();
-      const fileBase = getSafeFileName(graphState?.session?.goal || "mindweaver-map");
+      const fileBase = getSafeFileName(getMapName(graphState?.session, "mindweaver-map"));
       downloadTextFile(content, `${fileBase}.${isJson ? "json" : "md"}`, isJson ? "application/json" : "text/markdown");
       setStatusMessage(`Exported ${isJson ? "JSON" : "Markdown"} map.`);
     } catch (error) {
@@ -917,6 +645,27 @@ export default function App() {
     () => graphState?.nodes?.find((node) => node.id === selectedNodeId) ?? null,
     [graphState, selectedNodeId]
   );
+  const currentMapNameValue = String(graphState?.session?.goal ?? "");
+  const primaryGoalNode = useMemo(() => {
+    const storedGoalId = graphState?.goals?.[0]?.id ?? null;
+    if (storedGoalId) {
+      return graphState?.nodes?.find((node) => node.id === storedGoalId) ?? null;
+    }
+    return graphState?.nodes?.find((node) => node.type === "goal") ?? null;
+  }, [graphState]);
+
+  useEffect(() => {
+    setIsEditingMapName(false);
+    setMapNameDraft(currentMapNameValue);
+  }, [graphState?.session?.id]);
+
+  useEffect(() => {
+    if (isEditingMapName) return;
+    setMapNameDraft(currentMapNameValue);
+  }, [currentMapNameValue, isEditingMapName]);
+
+  const trimmedMapNameDraft = mapNameDraft.trim();
+  const hasMapNameChanges = trimmedMapNameDraft !== currentMapNameValue.trim();
 
   useEffect(() => {
     if (!selectedNode) return;
@@ -931,16 +680,100 @@ export default function App() {
     setIntersectionResult(null);
   }, [selectedNode?.id]);
 
+  const nodeHierarchyById = useMemo(() => {
+    if (!graphState) return new Map();
+
+    const visibleNodes = graphState.nodes.filter((node) => visibleNodeTypes.includes(node.type));
+    if (!visibleNodes.length) return new Map();
+
+    const nodeIds = new Set(visibleNodes.map((node) => node.id));
+    const outgoingById = new Map(visibleNodes.map((node) => [node.id, []]));
+    const incomingCountById = new Map(visibleNodes.map((node) => [node.id, 0]));
+
+    graphState.edges.forEach((edge) => {
+      if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) return;
+      outgoingById.get(edge.source)?.push(edge.target);
+      incomingCountById.set(edge.target, (incomingCountById.get(edge.target) ?? 0) + 1);
+    });
+
+    let rootIds = visibleNodes.filter((node) => node.type === "goal").map((node) => node.id);
+    if (!rootIds.length) {
+      rootIds = visibleNodes
+        .filter((node) => (incomingCountById.get(node.id) ?? 0) === 0)
+        .map((node) => node.id);
+    }
+    if (!rootIds.length) {
+      const shallowestLevel = Math.min(...visibleNodes.map((node) => NODE_HIERARCHY_LEVELS[node.type] ?? 99));
+      rootIds = visibleNodes
+        .filter((node) => (NODE_HIERARCHY_LEVELS[node.type] ?? 99) === shallowestLevel)
+        .map((node) => node.id);
+    }
+
+    const depthById = new Map();
+    const queue = [];
+    rootIds.forEach((nodeId) => {
+      depthById.set(nodeId, 0);
+      queue.push(nodeId);
+    });
+
+    for (let index = 0; index < queue.length; index += 1) {
+      const sourceId = queue[index];
+      const sourceDepth = depthById.get(sourceId) ?? 0;
+
+      (outgoingById.get(sourceId) ?? []).forEach((targetId) => {
+        const nextDepth = sourceDepth + 1;
+        const currentDepth = depthById.get(targetId);
+        if (currentDepth === undefined || nextDepth < currentDepth) {
+          depthById.set(targetId, nextDepth);
+          queue.push(targetId);
+        }
+      });
+    }
+
+    return new Map(
+      visibleNodes.map((node) => {
+        const incomingCount = incomingCountById.get(node.id) ?? 0;
+        const outgoingCount = (outgoingById.get(node.id) ?? []).length;
+        const fallbackDepth = NODE_HIERARCHY_LEVELS[node.type] ?? 3;
+        const hierarchyDepth = depthById.get(node.id) ?? fallbackDepth;
+        const depthScale = 1.14 - hierarchyDepth * 0.05;
+        const branchBonus = Math.min(0.16, outgoingCount * 0.028);
+        const rootBoost = incomingCount === 0 ? 0.04 : 0;
+        const hierarchyScale = Math.max(0.9, Math.min(1.32, depthScale + branchBonus + rootBoost));
+
+        return [
+          node.id,
+          {
+            hierarchyDepth,
+            hierarchyScale,
+            hierarchyInDegree: incomingCount,
+            hierarchyOutDegree: outgoingCount
+          }
+        ];
+      })
+    );
+  }, [graphState]);
+
   const graphData = useMemo(() => {
     if (!graphState) return { nodes: [], links: [] };
 
     const query = deferredNodeSearch.trim().toLowerCase();
-    const nodes = graphState.nodes.filter((node) => {
-      if (!visibleNodeTypes.includes(node.type)) return false;
-      if (nodeTypeFilter !== "all" && node.type !== nodeTypeFilter) return false;
-      if (query && !node.label.toLowerCase().includes(query)) return false;
-      return true;
-    });
+    const nodes = graphState.nodes
+      .filter((node) => {
+        if (!visibleNodeTypes.includes(node.type)) return false;
+        if (nodeTypeFilter !== "all" && node.type !== nodeTypeFilter) return false;
+        if (query && !node.label.toLowerCase().includes(query)) return false;
+        return true;
+      })
+      .map((node) => ({
+        ...node,
+        ...(nodeHierarchyById.get(node.id) ?? {
+          hierarchyDepth: NODE_HIERARCHY_LEVELS[node.type] ?? 3,
+          hierarchyScale: 1,
+          hierarchyInDegree: 0,
+          hierarchyOutDegree: 0
+        })
+      }));
     const nodeIds = new Set(nodes.map((node) => node.id));
     const links = graphState.edges
       .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
@@ -951,7 +784,7 @@ export default function App() {
       }));
 
     return { nodes, links };
-  }, [deferredNodeSearch, graphState, nodeTypeFilter]);
+  }, [deferredNodeSearch, graphState, nodeHierarchyById, nodeTypeFilter]);
 
   const graphTopologySignature = useMemo(() => {
     if (!graphData.nodes.length) return "empty";
@@ -973,6 +806,7 @@ export default function App() {
   const maxImportChars = healthState?.maxPayloadContentChars ?? 80000;
   const importContentLength = importForm.content.length;
   const importIsTooLong = importContentLength > maxImportChars;
+  const chatImportProviderLabel = CHAT_IMPORT_PROVIDER_OPTIONS.find((option) => option.value === chatImportProvider)?.label ?? "ChatGPT";
 
   const fitGraphToViewport = useCallback((duration = 260) => {
     if (!fgRef.current || !graphData.nodes.length) return;
@@ -1103,7 +937,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, action })
       });
-      setStatusMessage(action === "approve" ? "Concept approved and moved forward in the review schedule." : "Concept rejected and removed from this session graph.");
+      setStatusMessage(action === "approve" ? "Concept approved and moved forward in the review schedule." : "Concept rejected and removed from this map.");
       await loadGraph();
     } catch (error) {
       setErrorMessage(error.message);
@@ -1138,7 +972,7 @@ export default function App() {
   };
 
   const handleRunGapAnalysis = async () => {
-    if (!sessionId || !graphState?.goals?.length) return;
+    if (!sessionId || !primaryGoalNode?.id) return;
     setIsLoadingGaps(true);
     setGapSummary(null);
     setErrorMessage("");
@@ -1149,11 +983,11 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId,
-          goalId: graphState.goals[0].id
+          goalId: primaryGoalNode.id
         })
       });
       setGapSummary(result);
-      setStatusMessage("Gap analysis updated from the current session graph.");
+      setStatusMessage("Gap analysis updated from the current map.");
       await loadGraph();
     } catch (error) {
       setErrorMessage(error.message);
@@ -1225,6 +1059,110 @@ export default function App() {
     }
   };
 
+  const loadChatImportTemplate = useCallback(async () => {
+    if (!sessionId) return;
+
+    const result = await fetchJson(
+      `${API_BASE}/api/import-chat-history/template?provider=${encodeURIComponent(chatImportProvider)}&sessionId=${encodeURIComponent(sessionId)}`
+    );
+    const nextPrompt = result.prompt ?? "";
+    setChatImportPrompt(nextPrompt);
+    setChatImportSchemaVersion(result.schemaVersion ?? "mindweaver.chat_import.v1");
+    return nextPrompt;
+  }, [chatImportProvider, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId || rightPanel !== "import") return;
+
+    let cancelled = false;
+    setIsLoadingChatImportPrompt(true);
+
+    loadChatImportTemplate()
+      .catch((error) => {
+        if (cancelled) return;
+        setChatImportPrompt("");
+        setChatImportErrorMessage(error.message);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingChatImportPrompt(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadChatImportTemplate, rightPanel, sessionId]);
+
+  const handleCopyChatImportPrompt = async () => {
+    const providerLabel = CHAT_IMPORT_PROVIDER_OPTIONS.find((option) => option.value === chatImportProvider)?.label ?? "ChatGPT";
+
+    try {
+      let promptToCopy = chatImportPrompt;
+      if (!promptToCopy.trim()) {
+        setIsLoadingChatImportPrompt(true);
+        promptToCopy = await loadChatImportTemplate();
+      }
+
+      await navigator.clipboard.writeText(promptToCopy);
+      setChatImportErrorMessage("");
+      setStatusMessage(`${providerLabel} import prompt copied. Paste it into ${providerLabel}, then bring the JSON response back here.`);
+    } catch (error) {
+      setChatImportErrorMessage(error.message || "Could not copy the import prompt automatically.");
+    } finally {
+      setIsLoadingChatImportPrompt(false);
+    }
+  };
+
+  const handleChatHistoryImportSubmit = async () => {
+    if (!sessionId) return;
+
+    const jsonText = extractJsonObjectString(chatImportJson);
+    if (!jsonText) {
+      setChatImportErrorMessage("Paste the JSON response from ChatGPT or Claude before importing.");
+      return;
+    }
+
+    let importData;
+    try {
+      importData = JSON.parse(jsonText);
+    } catch {
+      setChatImportErrorMessage("The pasted response is not valid JSON yet. Copy the JSON block and try again.");
+      return;
+    }
+
+    if (chatHistoryImportPreview.state === "ready" && chatHistoryImportPreview.issues?.length) {
+      setChatImportErrorMessage(chatHistoryImportPreview.issues.join(" "));
+      return;
+    }
+
+    setIsImportingChatHistory(true);
+    setErrorMessage("");
+    setChatImportErrorMessage("");
+
+    try {
+      const result = await fetchJson(`${API_BASE}/api/import-chat-history`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          importData
+        })
+      });
+
+      setChatImportJson("");
+      setChatImportErrorMessage("");
+      setStatusMessage(
+        result.deduped
+          ? "That chat-history import was already added to this map."
+          : `Imported ${result.importedNodeCount} nodes and ${result.importedRelationshipCount} relationships from chat history.${Array.isArray(result.warnings) && result.warnings.length ? ` ${result.warnings.join(" ")}` : ""}`
+      );
+      await loadGraph();
+    } catch (error) {
+      setChatImportErrorMessage(error.message);
+    } finally {
+      setIsImportingChatHistory(false);
+    }
+  };
+
   const handleImportChange = (field, value) => {
     setImportForm((current) => ({
       ...current,
@@ -1275,7 +1213,7 @@ export default function App() {
         url: "",
         content: ""
       }));
-      setStatusMessage("Imported source added to the session graph.");
+      setStatusMessage("Imported source added to this map.");
       await loadGraph();
     } catch (error) {
       setErrorMessage(error.message);
@@ -1517,6 +1455,60 @@ export default function App() {
     }
   };
 
+  const handleCreateGoalNode = async () => {
+    if (!sessionId || !goalNodeDraft.trim()) return;
+
+    setIsCreatingGoalNode(true);
+    setErrorMessage("");
+
+    try {
+      const result = await fetchJson(`${API_BASE}/api/nodes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          type: "goal",
+          label: goalNodeDraft.trim()
+        })
+      });
+      setGoalNodeDraft("");
+      setSelectedNodeId(result.node?.id ?? null);
+      openRightPanel("inspector");
+      setStatusMessage(result.goalCreated ? "Primary goal node added to this map." : "Top-level goal node added to this map.");
+      await loadHomeData();
+      await loadGraph();
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setIsCreatingGoalNode(false);
+    }
+  };
+
+  const handleRefineMap = async () => {
+    if (!sessionId) return;
+    const confirmed = window.confirm("Refine this map with OpenAI? MindWeaver will rename, merge, and reconnect nodes conservatively to improve clarity.");
+    if (!confirmed) return;
+
+    setIsRefiningMap(true);
+    setErrorMessage("");
+
+    try {
+      const result = await fetchJson(`${API_BASE}/api/refine`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId })
+      });
+      const warningCopy = result.applied?.warnings?.length ? ` ${result.applied.warnings.join(" ")}` : "";
+      setStatusMessage(`${result.message || "Map refined."}${warningCopy}`);
+      await loadHomeData();
+      await loadGraph();
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setIsRefiningMap(false);
+    }
+  };
+
   const handleIntersect = async () => {
     if (!selectedNode || !intersectionTargetId) return;
     setIsIntersecting(true);
@@ -1536,9 +1528,23 @@ export default function App() {
     }
   };
 
+  const revealRightPanel = useCallback(() => {
+    if (!window.matchMedia("(max-width: 1180px)").matches) return;
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        rightRailRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start"
+        });
+      });
+    });
+  }, []);
+
   const openRightPanel = (panel) => {
     setRightPanel(panel);
     setRightRailMinimized(false);
+    revealRightPanel();
   };
 
   const handleFocusGraph = () => {
@@ -1609,7 +1615,7 @@ export default function App() {
           <h2>{activeWorkspaceName}</h2>
         </div>
         <div className="map-tabs-meta">
-          <span>{sessionTargetState.activeSession ? `Extension target: ${sessionTargetState.activeSession.goal || "Untitled map"}` : "Extension target is idle"}</span>
+          <span>{sessionTargetState.activeSession ? `Extension target: ${getMapName(sessionTargetState.activeSession)}` : "Extension target is idle"}</span>
           <span>{openTabSessions.length} open tab{openTabSessions.length === 1 ? "" : "s"}</span>
         </div>
       </div>
@@ -1626,7 +1632,7 @@ export default function App() {
         {openTabSessions.map((session) => (
           <div key={session.id} className={`map-tab ${sessionId === session.id ? "is-active" : ""}`}>
             <button type="button" className="map-tab-main" onClick={() => openSessionTab(session.id)}>
-              <strong>{session.goal || "Untitled map"}</strong>
+              <strong>{getMapName(session)}</strong>
               <span>
                 {session.id === sessionTargetState.activeSessionId ? "capture target" : session.endedAt ? "ended" : "live"} • {session.sourceCount} sources
               </span>
@@ -1634,7 +1640,7 @@ export default function App() {
             <button
               type="button"
               className="map-tab-close"
-              aria-label={`Close ${session.goal || "Untitled map"} tab`}
+              aria-label={`Close ${getMapName(session)} tab`}
               onClick={() => closeSessionTab(session.id)}
             >
               ×
@@ -1645,7 +1651,7 @@ export default function App() {
         <form className="map-tab-create-form" onSubmit={(event) => handleCreateSession(event, { fromTabs: true })}>
           <input
             className="text-input map-tab-input"
-            placeholder="New map goal..."
+                    placeholder="Map name"
             value={tabComposerGoal}
             onChange={(event) => setTabComposerGoal(event.target.value)}
           />
@@ -1655,15 +1661,15 @@ export default function App() {
         </form>
       </div>
 
-      {reopenableSessions.length ? (
-        <div className="map-reopen-row">
-          <span>Reopen recent</span>
-          {reopenableSessions.map((session) => (
-            <button key={session.id} type="button" className="map-reopen-chip" onClick={() => openSessionTab(session.id)}>
-              {session.goal || "Untitled map"}
-            </button>
-          ))}
-        </div>
+        {reopenableSessions.length ? (
+          <div className="map-reopen-row">
+            <span>Reopen recent</span>
+            {reopenableSessions.map((session) => (
+              <button key={session.id} type="button" className="map-reopen-chip" onClick={() => openSessionTab(session.id)}>
+                {getMapName(session)}
+              </button>
+            ))}
+          </div>
       ) : null}
     </section>
   );
@@ -1682,10 +1688,10 @@ export default function App() {
             </p>
             <form className="start-form" onSubmit={handleCreateSession}>
               <label>
-                <span>Learning goal</span>
+                <span>Map name</span>
                 <textarea
                   className="text-area compact-area"
-                  placeholder="Example: Build a practical mental model of event-driven systems"
+                  placeholder="Example: Event-driven systems knowledge map"
                   value={startGoal}
                   onChange={(event) => setStartGoal(event.target.value)}
                 />
@@ -1704,7 +1710,7 @@ export default function App() {
             <div className="panel">
               <p className="panel-title">How It Works</p>
               <div className="step-list">
-                <div className="step-card"><strong>1. Set a goal</strong><span>Give the graph a direction so gaps and quizzes stay useful.</span></div>
+                <div className="step-card"><strong>1. Name the map</strong><span>Start with a clear map name, then add goal nodes only when they help the structure.</span></div>
                 <div className="step-card"><strong>2. Capture sources</strong><span>Browse with the extension or import notes, PDF text, docs, and transcripts.</span></div>
                 <div className="step-card"><strong>3. Review the map</strong><span>Approve good concepts, reject noisy ones, and use quizzes to strengthen memory.</span></div>
               </div>
@@ -1728,13 +1734,13 @@ export default function App() {
                     className="session-card"
                     onClick={() => openSessionTab(session.id)}
                   >
-                    <strong>{session.goal || "Untitled learning session"}</strong>
+                    <strong>{getMapName(session)}</strong>
                     <span>{session.conceptCount} concepts • {session.sourceCount} sources • {session.endedAt ? "ended" : "live"}</span>
                   </button>
                 )) : (
                   <div className="queue-item">
                     <h3>No maps yet</h3>
-                    <div className="queue-meta">Start your first session above. The extension is optional for getting started.</div>
+                    <div className="queue-meta">Start your first map above. The extension is optional for getting started.</div>
                   </div>
                 )}
               </div>
@@ -1794,7 +1800,7 @@ export default function App() {
               </button>
               <button className={`workspace-button ${rightPanel === "progress" ? "is-active" : ""}`} onClick={() => openRightPanel("progress")}>
                 <strong>Progress Report</strong>
-                <span>{progressState?.longTerm?.sessionCount ?? 0} sessions tracked</span>
+                <span>{progressState?.longTerm?.sessionCount ?? 0} maps tracked</span>
               </button>
               <button className={`workspace-button ${rightPanel === "import" ? "is-active" : ""}`} onClick={() => openRightPanel("import")}>
                 <strong>Import Sources</strong>
@@ -1811,40 +1817,48 @@ export default function App() {
             </div>
           </section>
 
-          <section className="panel hero-card">
-            <p className="panel-title">Session Overview</p>
-            <h1>{graphState?.session?.goal || "Open learning session"}</h1>
-            <p>
-              Turn passive browsing into a graph you can trust, review, and strengthen with better evidence.
-            </p>
-            <div className="stat-grid">
-              <div className="stat-card">
-                <span className="stat-label">Nodes</span>
-                <span className="stat-value">{graphData.nodes.length}</span>
-              </div>
-              <div className="stat-card">
-                <span className="stat-label">Sources</span>
-                <span className="stat-value">{graphState?.artifacts?.length ?? 0}</span>
-              </div>
-              <div className="stat-card">
-                <span className="stat-label">Needs Review</span>
-                <span className="stat-value">{graphState?.reviewQueue?.length ?? 0}</span>
-              </div>
-            </div>
-            <div className="action-row">
-              <button className="primary-button" onClick={() => { openRightPanel("gaps"); handleRunGapAnalysis(); }} disabled={isLoadingGaps || !graphState?.goals?.length}>
-                {isLoadingGaps ? "Finding gaps..." : "Run Gap Analysis"}
-              </button>
-              <button className="secondary-button" onClick={() => { openRightPanel("quiz"); handleGenerateQuiz(); }} disabled={isLoadingQuiz}>
-                {isLoadingQuiz ? "Building quiz..." : "Generate Quiz"}
-              </button>
-              <button className="ghost-button" onClick={handleEndSession} disabled={isEndingSession || graphState?.session?.endedAt}>
-                {graphState?.session?.endedAt ? "Session Ended" : isEndingSession ? "Ending..." : "End Session"}
-              </button>
-            </div>
-            {statusMessage ? <div className="message-banner">{statusMessage}</div> : null}
-            {errorMessage ? <div className="message-banner error-banner">{errorMessage}</div> : null}
-          </section>
+          <MapStructurePanel
+            mapNameDraft={mapNameDraft}
+            onMapNameChange={(value) => {
+              setIsEditingMapName(true);
+              setMapNameDraft(value);
+            }}
+            onSaveMapName={handleRenameMap}
+            isRenamingMap={isRenamingMap}
+            hasMapNameChanges={hasMapNameChanges}
+            goalNodeDraft={goalNodeDraft}
+            onGoalNodeDraftChange={setGoalNodeDraft}
+            onCreateGoalNode={handleCreateGoalNode}
+            isCreatingGoalNode={isCreatingGoalNode}
+            primaryGoalNode={primaryGoalNode}
+            isRefiningMap={isRefiningMap}
+            onRefineMap={handleRefineMap}
+            openaiConfigured={healthState?.openaiConfigured}
+            nodeCount={graphData.nodes.length}
+          />
+
+          <MapOverviewCard
+            mapName={getMapName(graphState?.session)}
+            nodeCount={graphData.nodes.length}
+            sourceCount={graphState?.artifacts?.length ?? 0}
+            reviewCount={graphState?.reviewQueue?.length ?? 0}
+            onRunGapAnalysis={() => {
+              openRightPanel("gaps");
+              handleRunGapAnalysis();
+            }}
+            isLoadingGaps={isLoadingGaps}
+            canRunGapAnalysis={Boolean(primaryGoalNode?.id)}
+            onGenerateQuiz={() => {
+              openRightPanel("quiz");
+              handleGenerateQuiz();
+            }}
+            isLoadingQuiz={isLoadingQuiz}
+            onEndSession={handleEndSession}
+            isEndingSession={isEndingSession}
+            isEnded={Boolean(graphState?.session?.endedAt)}
+            statusMessage={statusMessage}
+            errorMessage={errorMessage}
+          />
 
           <section className="panel safety-panel">
             <p className="panel-title">Privacy & Control</p>
@@ -1927,7 +1941,7 @@ export default function App() {
               </button>
             </div>
             <div className="status-pill">
-              <span>{graphState?.session?.endedAt ? "Ended" : "Live session"}</span>
+              <span>{graphState?.session?.endedAt ? "Ended" : "Live map"}</span>
               <span>•</span>
               <span>{graphState?.artifacts?.length ?? 0} sources</span>
             </div>
@@ -1962,7 +1976,7 @@ export default function App() {
               <div className="graph-empty">
                 <p className="panel-title">Start Building</p>
                 <h3>No visible map nodes yet</h3>
-                <p>Set a goal, import a note, or browse with the extension. Once sources are classified, your knowledge map will appear here.</p>
+                <p>Name the map, import a note, or browse with the extension. Once sources are classified, your knowledge map will appear here.</p>
                 <button className="primary-button" onClick={() => openRightPanel("import")}>
                   Import First Source
                 </button>
@@ -1994,7 +2008,7 @@ export default function App() {
           </div>
         </main>
 
-        <aside className={`right-rail ${rightRailMinimized ? "is-minimized" : ""}`} aria-label="Workspace details">
+        <aside ref={rightRailRef} className={`right-rail ${rightRailMinimized ? "is-minimized" : ""}`} aria-label="Workspace details">
           {rightRailMinimized ? (
             <button className="rail-tab rail-tab-right" type="button" onClick={() => setRightRailMinimized(false)} aria-label={`Expand ${rightPanelLabel}`}>
               <span className="rail-tab-label">{rightPanelLabel}</span>
@@ -2042,7 +2056,7 @@ export default function App() {
                   <p className="panel-title">Progress Report</p>
                   <h2>Learning health</h2>
                   <p className="panel-subtitle">
-                    Session and long-term learning health, based on concepts, evidence, and verification.
+                    Map and long-term learning health, based on concepts, evidence, and verification.
                   </p>
                 </div>
                 <div className="progress-grid workspace-progress-grid">
@@ -2156,32 +2170,111 @@ export default function App() {
                 <div className="workspace-panel-header">
                   <p className="panel-title">Import Sources</p>
                   <h2>Add source material</h2>
-                  <p className="panel-subtitle">Add notes, PDF text, YouTube transcripts, docs, bookmarks, or highlights.</p>
+                  <p className="panel-subtitle">Bring in manual notes, or bootstrap a map from the user's ChatGPT or Claude history with structured JSON.</p>
                 </div>
-                <form className="import-form workspace-form" onSubmit={handleImportSubmit}>
-                  <SelectControl
-                    value={importForm.sourceType}
-                    onChange={(value) => handleImportChange("sourceType", value)}
-                    options={SOURCE_TYPE_OPTIONS}
-                    ariaLabel="Source type"
-                  />
-                  <input className="text-input" placeholder="Title" value={importForm.title} onChange={(event) => handleImportChange("title", event.target.value)} />
-                  <input className="text-input" placeholder="Optional source URL" value={importForm.url} onChange={(event) => handleImportChange("url", event.target.value)} />
-                  <textarea
-                    className="text-area workspace-area import-content-area"
-                    placeholder="Paste the note, transcript, or extracted PDF text here..."
-                    value={importForm.content}
-                    onChange={(event) => handleImportChange("content", event.target.value)}
-                  />
-                  <input className="text-input" type="file" accept=".txt,.md,.text" onChange={handleImportFile} />
-                  <div className={`char-meter ${importIsTooLong ? "is-danger" : ""}`}>
-                    {importContentLength.toLocaleString()} / {maxImportChars.toLocaleString()} characters. OpenAI classification reads up to {healthState?.contentLimitChars?.toLocaleString() ?? "16,000"} characters.
+                <div className="summary-card onboarding-import-card">
+                  <h3>Import Chat History Context</h3>
+                  <div className="queue-meta">
+                    Copy the prompt below, paste it into {chatImportProviderLabel}, then paste the JSON response back into MindWeaver. The import adds source-backed domain, skill, and concept nodes to this map without needing another OpenAI pass.
                   </div>
-                  {importIsTooLong ? <div className="message-banner error-banner">This import is too large. Trim it or split it into multiple sources before importing.</div> : null}
-                  <button className="primary-button" type="submit" disabled={isImporting || importIsTooLong}>
-                    {isImporting ? "Importing..." : "Import Into Session"}
-                  </button>
-                </form>
+                  <div className="import-form workspace-form">
+                    <SelectControl
+                      value={chatImportProvider}
+                      onChange={setChatImportProvider}
+                      options={CHAT_IMPORT_PROVIDER_OPTIONS}
+                      ariaLabel="Chat import provider"
+                    />
+                    <textarea
+                      className="text-area chat-import-prompt-area"
+                      readOnly
+                      value={chatImportPrompt}
+                      placeholder={isLoadingChatImportPrompt ? `Preparing a ${chatImportProviderLabel} prompt for this map...` : "Prompt will appear here."}
+                    />
+                    <div className="chat-import-actions">
+                      <button className="secondary-button" type="button" onClick={handleCopyChatImportPrompt} disabled={isLoadingChatImportPrompt || !sessionId}>
+                        {isLoadingChatImportPrompt ? "Preparing Prompt..." : `Copy ${chatImportProviderLabel} Prompt`}
+                      </button>
+                      <div className="queue-meta">
+                        The prompt is tuned to the current map and requests strict JSON only.
+                      </div>
+                    </div>
+                    <textarea
+                      className="text-area workspace-area chat-import-json-area"
+                      placeholder="Paste the JSON response from ChatGPT or Claude here..."
+                      value={chatImportJson}
+                      onChange={(event) => {
+                        setChatImportJson(event.target.value);
+                        setChatImportErrorMessage("");
+                      }}
+                    />
+                    {chatHistoryImportPreview.state === "error" ? (
+                      <div className="message-banner error-banner">{chatHistoryImportPreview.message}</div>
+                    ) : null}
+                    {chatHistoryImportPreview.state === "ready" ? (
+                      <div className="chat-import-preview">
+                        <div className="chat-import-preview-header">
+                          <strong>{chatHistoryImportPreview.title}</strong>
+                          <span>{chatHistoryImportPreview.provider || "provider not set"}</span>
+                        </div>
+                        <div className="chat-import-pill-row">
+                          <span className="chat-import-pill">{chatHistoryImportPreview.nodeCount} nodes</span>
+                          <span className="chat-import-pill">{chatHistoryImportPreview.relationshipCount} relationships</span>
+                          <span className="chat-import-pill">{chatHistoryImportPreview.highlightCount} highlights</span>
+                        </div>
+                        <div className="queue-meta">
+                          Schema: {chatHistoryImportPreview.schemaVersion || "missing"}
+                          {chatImportSchemaVersion && chatHistoryImportPreview.schemaVersion !== chatImportSchemaVersion ? " - this will be rejected until the schema version matches." : ""}
+                        </div>
+                        {chatHistoryImportPreview.summary ? (
+                          <div className="queue-meta chat-import-preview-summary">{chatHistoryImportPreview.summary}</div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {chatHistoryImportPreview.state === "ready" && chatHistoryImportPreview.issues?.length ? (
+                      <div className="message-banner error-banner">{chatHistoryImportPreview.issues.join(" ")}</div>
+                    ) : null}
+                    {chatHistoryImportPreview.state === "ready" && chatHistoryImportPreview.warnings?.length ? (
+                      <div className="message-banner">{chatHistoryImportPreview.warnings.join(" ")}</div>
+                    ) : null}
+                    {chatImportErrorMessage ? <div className="message-banner error-banner">{chatImportErrorMessage}</div> : null}
+                    <button
+                      className="primary-button"
+                      type="button"
+                      disabled={isImportingChatHistory || !chatImportJson.trim() || (chatHistoryImportPreview.state === "ready" && chatHistoryImportPreview.issues?.length)}
+                      onClick={handleChatHistoryImportSubmit}
+                    >
+                      {isImportingChatHistory ? "Importing Chat History..." : "Import Chat History JSON"}
+                    </button>
+                  </div>
+                </div>
+                <div className="summary-card">
+                  <h3>Manual Source Import</h3>
+                  <div className="queue-meta">Paste notes, transcripts, docs, or extracted text directly into the current map.</div>
+                  <form className="import-form workspace-form" onSubmit={handleImportSubmit}>
+                    <SelectControl
+                      value={importForm.sourceType}
+                      onChange={(value) => handleImportChange("sourceType", value)}
+                      options={SOURCE_TYPE_OPTIONS}
+                      ariaLabel="Source type"
+                    />
+                    <input className="text-input" placeholder="Title" value={importForm.title} onChange={(event) => handleImportChange("title", event.target.value)} />
+                    <input className="text-input" placeholder="Optional source URL" value={importForm.url} onChange={(event) => handleImportChange("url", event.target.value)} />
+                    <textarea
+                      className="text-area workspace-area import-content-area"
+                      placeholder="Paste the note, transcript, or extracted PDF text here..."
+                      value={importForm.content}
+                      onChange={(event) => handleImportChange("content", event.target.value)}
+                    />
+                    <input className="text-input" type="file" accept=".txt,.md,.text" onChange={handleImportFile} />
+                    <div className={`char-meter ${importIsTooLong ? "is-danger" : ""}`}>
+                      {importContentLength.toLocaleString()} / {maxImportChars.toLocaleString()} characters. OpenAI classification reads up to {healthState?.contentLimitChars?.toLocaleString() ?? "16,000"} characters.
+                    </div>
+                    {importIsTooLong ? <div className="message-banner error-banner">This import is too large. Trim it or split it into multiple sources before importing.</div> : null}
+                    <button className="primary-button" type="submit" disabled={isImporting || importIsTooLong}>
+                      {isImporting ? "Importing..." : "Import Into Map"}
+                    </button>
+                  </form>
+                </div>
                 <div className="summary-card">
                   <h3>Bulk Markdown / Reading List Import</h3>
                   <div className="queue-meta">Paste multiple notes or saved-reading extracts. Separate each item with a line containing ---.</div>
@@ -2201,7 +2294,7 @@ export default function App() {
                   {(graphState?.artifacts ?? []).slice(-4).reverse().map((artifact) => (
                     <div key={artifact.id} className="queue-item">
                       <h3>{artifact.title}</h3>
-                      <div className="queue-meta">{artifact.sourceType || "page"} • {artifact.contentLength} chars</div>
+                      <div className="queue-meta">{formatSourceTypeLabel(artifact.sourceType)} • {artifact.contentLength} chars</div>
                       <div className="queue-actions">
                         <button className="small-button is-reject" type="button" disabled={isDeletingArtifact} onClick={() => handleDeleteArtifact(artifact.id)}>
                           Remove Source
@@ -2218,9 +2311,9 @@ export default function App() {
                 <div className="workspace-panel-header">
                   <p className="panel-title">Gap Analysis</p>
                   <h2>Missing concepts</h2>
-                  <p className="panel-subtitle">Use the current graph and session goal to choose the next learning move.</p>
+                  <p className="panel-subtitle">Use the current map structure and primary goal node to choose the next learning move.</p>
                 </div>
-                <button className="primary-button workspace-primary-action" onClick={handleRunGapAnalysis} disabled={isLoadingGaps || !graphState?.goals?.length}>
+                <button className="primary-button workspace-primary-action" onClick={handleRunGapAnalysis} disabled={isLoadingGaps || !primaryGoalNode?.id}>
                   {isLoadingGaps ? "Finding gaps..." : "Run Gap Analysis"}
                 </button>
                 {gapSummary ? (
@@ -2230,7 +2323,7 @@ export default function App() {
                     {gapSummary.gaps?.length ? (
                       <div className="queue-meta">Missing concepts: {gapSummary.gaps.join(", ")}</div>
                     ) : (
-                      <div className="queue-meta">The current session already covers the obvious next concepts. Keep verifying what you know.</div>
+                      <div className="queue-meta">The current map already covers the obvious next concepts. Keep verifying what you know.</div>
                     )}
                     {gapSummary.pathway?.length ? (
                       <ol className="pathway-list">
@@ -2491,7 +2584,7 @@ export default function App() {
                     <div key={`${source.artifactId ?? source.url}-${source.sessionId}`} className="evidence-item">
                       <a className="evidence-link" href={source.url} target="_blank" rel="noreferrer">
                         <strong>{source.title}</strong>
-                        <div className="muted-copy">{source.sourceType || "page"} • {source.url}</div>
+                        <div className="muted-copy">{formatSourceTypeLabel(source.sourceType)} • {source.url}</div>
                       </a>
                       {source.artifactId ? (
                         <button className="small-button is-reject" type="button" disabled={isDeletingArtifact} onClick={() => handleDeleteArtifact(source.artifactId)}>

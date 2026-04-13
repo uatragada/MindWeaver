@@ -39,9 +39,19 @@ The server owns persistence, graph mutations, AI calls, and production static se
 
 The web app is a Vite + React UI for map exploration and cleanup.
 
-- `web/src/App.jsx` renders the graph, review workflows, import tools, learning workflows, and inspector.
-- `web/src/app.css` contains the app styling.
+- `web/src/App.jsx` now acts as the top-level workspace orchestrator for data loading, graph interactions, and panel state.
+- `web/src/components/` holds extracted UI building blocks such as map panels and shared controls.
+- `web/src/hooks/` holds reusable browser-state hooks such as local-storage persistence and session-route syncing.
+- `web/src/lib/` holds frontend constants, formatting helpers, graph rendering helpers, and chat-import preview parsing.
+- `web/src/app.css` contains the shared app styling.
 - `web/src/ErrorBoundary.jsx` prevents React render failures from blanking the whole app.
+
+The frontend is being split toward a clearer pattern:
+
+- `App.jsx` coordinates stateful workflows and cross-panel mutations.
+- `components/` owns presentational slices.
+- `hooks/` owns browser-specific React behavior.
+- `lib/` owns pure helpers that are safe to unit test.
 
 In development, the web app runs on `http://localhost:5197` and talks to `http://localhost:3001`. In production-style local mode, Express serves `web/dist` from `http://127.0.0.1:3001`.
 
@@ -51,7 +61,7 @@ LowDB stores local data in `server/data.json`, which is intentionally ignored by
 
 Core collections:
 
-- `sessions`: learning sessions and goals-in-progress.
+- `sessions`: learning maps and session metadata.
 - `goals`: explicit learning goals for sessions.
 - `nodes`: graph nodes such as `goal`, `domain`, `skill`, and `concept`.
 - `edges`: graph relationships such as `contains`, `builds_on`, `related`, `prerequisite`, `supports`, `contrasts`, and `needs`.

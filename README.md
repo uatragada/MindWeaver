@@ -3,7 +3,7 @@
 ## What It Does
 
 - Capture source material from the Chrome extension or paste it directly into the app.
-- Organize learning into goals, domains, skills, concepts, and relationships.
+- Organize learning into named maps, domains, skills, concepts, and relationships.
 - Keep provenance visible so every concept can be traced back to source material.
 - Review noisy AI output instead of trusting it blindly.
 - Run gap analysis, study plans, quiz loops, and source-grounded graph chat.
@@ -54,6 +54,16 @@ That starts:
 - web app: `http://127.0.0.1:5197`
 - API server: `http://127.0.0.1:3001`
 
+### 3b. Start the desktop app
+
+If you want MindWeaver as a standalone Windows desktop shell instead of running it in the browser:
+
+```bash
+npm run electron:dev
+```
+
+That starts the local API server, starts the React dev renderer, and opens MindWeaver in Electron.
+
 ### 4. Fastest possible first run
 
 1. Open `http://127.0.0.1:5197`
@@ -91,9 +101,19 @@ On Windows, you can also double-click:
 - [`start-app.bat`](start-app.bat)
 - [`start-production.bat`](start-production.bat)
 
+## Windows Desktop Packaging
+
+To build a Windows installer with Electron:
+
+```bash
+npm run electron:build
+```
+
+That produces an installer in `release/`.
+
 ## A 5-Minute Tour
 
-### 1. Start with a goal
+### 1. Start with a map
 
 Create a fresh map for something concrete:
 
@@ -101,7 +121,7 @@ Create a fresh map for something concrete:
 - "Understand RL enough to implement PPO"
 - "Learn the moving parts of Stripe subscriptions"
 
-A goal gives the graph a direction and makes gap analysis useful.
+A strong map name gives the graph a direction. If you want extra structure later, you can still add goal nodes inside the map.
 
 ### 2. Add source material
 
@@ -243,16 +263,20 @@ npm run setup        # install server and web dependencies
 npm run dev          # run server + web together
 npm run dev:server   # backend only
 npm run dev:web      # frontend only
+npm run test:web     # frontend unit tests for extracted helpers
 npm run build        # build the web app
 npm run start        # start the production-style Express server
 npm run test         # run backend tests
-npm run check        # tests + build
+npm run check        # backend, frontend, extension unit tests + build
 npm run eval:fixtures
 ```
 
 ## Repo Map
 
 - [`web/`](web): Vite + React graph UI
+- [`web/src/components/`](web/src/components): extracted UI panels and controls
+- [`web/src/hooks/`](web/src/hooks): reusable React hooks for routing and persisted UI state
+- [`web/src/lib/`](web/src/lib): frontend constants, formatting helpers, graph rendering logic, and import parsing
 - [`server/`](server): Express API, persistence, and AI-backed learning endpoints
 - [`extension/`](extension/README.md): Chrome extension for saving pages and highlights
 - [`docs/`](docs/README.md): architecture, API, development, product, and security docs

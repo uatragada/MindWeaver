@@ -9,7 +9,7 @@ Turn intentional learning saves into a trustworthy knowledge map that answers:
 - What have I been studying?
 - Which concepts are supported by evidence?
 - What should I review next?
-- What am I missing for my goal?
+- What is missing from this map?
 - Which sources created this understanding?
 
 ## Target User
@@ -42,7 +42,7 @@ Out of current scope:
 
 ## Main User Flow
 
-1. Start a map with a learning goal.
+1. Start a map with a clear name and scope.
 2. Save useful pages or highlights from the extension.
 3. Import notes, transcripts, PDFs, Markdown, docs, or repo excerpts when needed.
 4. Review the generated concepts and relationships.
@@ -72,5 +72,5 @@ Team/org features are tracked as deferred GitHub issues:
 - [Private vs shared evidence permissions](https://github.com/uatragada/MindWeaver/issues/3)
 - [Onboarding packs](https://github.com/uatragada/MindWeaver/issues/4)
 - [Expertise maps](https://github.com/uatragada/MindWeaver/issues/5)
-- [Shared goals and pathways](https://github.com/uatragada/MindWeaver/issues/6)
+- [Shared maps and pathways](https://github.com/uatragada/MindWeaver/issues/6)
 - [Research-team export and reporting](https://github.com/uatragada/MindWeaver/issues/7)

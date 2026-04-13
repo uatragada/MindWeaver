@@ -32,13 +32,15 @@ Restore body:
 }
 ```
 
-## Sessions And Goals
+## Sessions And Maps
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/sessions?limit=8` | Lists recent sessions with summary counts. |
-| `POST` | `/api/sessions` | Creates a new learning session and optional goal node. |
+| `GET` | `/api/sessions?limit=8` | Lists recent maps with summary counts. |
+| `GET` | `/api/session-target` | Returns the shared active-map state used by the web UI and extension. |
+| `POST` | `/api/sessions` | Creates a new learning map and optional legacy goal node. |
 | `POST` | `/api/demo-session` | Creates a prebuilt demo map. |
+| `PATCH` | `/api/sessions/:id` | Renames an existing map. |
 | `POST` | `/api/goals` | Adds or updates a session goal. |
 | `GET` | `/api/goals/:sessionId` | Lists goals for a session. |
 | `POST` | `/api/sessions/:id/end` | Marks a session ended. |
@@ -52,12 +54,16 @@ Create session body:
 }
 ```
 
+`goal` is still the field name in the data model, but in the current product this value is primarily treated as the map name.
+
 ## Sources And Imports
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/ingest` | Ingests a saved web page from the extension. |
 | `POST` | `/api/import` | Imports manual notes, PDF text, transcripts, Markdown, bookmarks, docs/repo excerpts, or highlights. |
+| `GET` | `/api/import-chat-history/template?provider=chatgpt&sessionId=...` | Returns a copy-paste prompt template for ChatGPT or Claude. |
+| `POST` | `/api/import-chat-history` | Imports structured JSON generated from external chat history. |
 | `POST` | `/api/import-bulk` | Imports multiple source items at once. |
 | `DELETE` | `/api/sessions/:sessionId/artifacts/:artifactId` | Removes one source artifact and detaches it from node evidence. |
 
@@ -89,6 +95,23 @@ Single import body:
 
 The server accepts source content up to 80,000 characters. OpenAI classification reads up to 16,000 characters per source.
 
+Chat-history import body:
+
+```json
+{
+  "sessionId": "session-id",
+  "payload": {
+    "schema_version": "mindweaver.chat_import.v1",
+    "provider": "chatgpt",
+    "title": "System design history",
+    "summary": "Broad summary of the imported conversation history.",
+    "conversation_highlights": [],
+    "nodes": [],
+    "relationships": []
+  }
+}
+```
+
 ## Graph
 
 | Method | Path | Purpose |
@@ -111,6 +134,7 @@ The server accepts source content up to 80,000 characters. OpenAI classification
 | `POST` | `/api/edges` | Adds a manual relationship between two nodes. |
 | `POST` | `/api/edges/:key/review` | Approves or rejects a graph edge for a session. |
 | `POST` | `/api/prune` | Finds or removes low-confidence concepts with no direct evidence. |
+| `POST` | `/api/nodes` | Creates a manual node, including top-level goal nodes when needed. |
 
 Node review body:
 
@@ -163,6 +187,7 @@ Manual relationship body:
 | `POST` | `/api/verify` | Applies quiz results to confidence and review scheduling. |
 | `POST` | `/api/chat` | Answers a source-grounded question against the graph. |
 | `GET` | `/api/summary/:sessionId` | Generates and stores a learning summary. |
+| `POST` | `/api/refine` | Reviews the current graph and applies conservative cleanup or relabeling. |
 | `POST` | `/api/intersect` | Finds a bridge between two graph nodes. |
 | `POST` | `/api/learn-more` | Generates a short explanation for a selected node. |
 

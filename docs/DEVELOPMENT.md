@@ -13,8 +13,7 @@ This guide covers local setup, common workflows, verification, and release hygie
 From the repo root:
 
 ```bash
-npm --prefix server install
-npm --prefix web install
+npm run setup
 ```
 
 Create local secrets:
@@ -37,6 +36,12 @@ Run backend tests:
 
 ```bash
 npm run test
+```
+
+Run frontend unit tests:
+
+```bash
+npm run test:web
 ```
 
 Run the main readiness check:
@@ -69,6 +74,17 @@ npm run eval:fixtures
 - Vite web dev server: `5197`
 - Old Vite default `5173` is intentionally avoided so other projects can use it.
 
+## Frontend Structure
+
+The web app is now split into a few clear layers instead of keeping all helper logic inside `web/src/App.jsx`:
+
+- `web/src/components/`: presentational UI slices and shared controls
+- `web/src/hooks/`: reusable hooks for route state and local storage
+- `web/src/lib/`: pure helpers, constants, graph rendering helpers, and import parsing
+- `web/src/App.jsx`: top-level workspace coordination and API-driven flows
+
+When refactoring, prefer moving pure logic into `lib/` first, then extracting stable UI sections into `components/`.
+
 ## Extension Workflow
 
 1. Start the local server with `npm run dev` or `npm run start`.
@@ -96,7 +112,10 @@ Do not commit:
 Before pushing meaningful code changes, run:
 
 ```bash
-npm run check
+npm run test
+npm run test:web
+npm run test:extension:unit
+npm run build
 node --check extension\content.js
 node --check extension\background.js
 node --check extension\popup.js

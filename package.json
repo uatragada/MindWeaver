@@ -2,22 +2,66 @@
   "name": "mindweaver",
   "private": true,
   "version": "0.1.0",
+  "description": "MindWeaver desktop knowledge-mapping app.",
+  "author": "MindWeaver contributors",
   "type": "module",
+  "main": "electron/main.mjs",
   "scripts": {
-    "setup": "node scripts/ensure-env.mjs && npm --prefix server install && npm --prefix web install",
+    "setup": "npm install && node scripts/ensure-env.mjs && npm --prefix server install && npm --prefix web install",
     "dev": "node scripts/ensure-env.mjs && node scripts/dev.mjs",
     "dev:server": "node scripts/ensure-env.mjs && npm --prefix server run dev",
     "dev:web": "npm --prefix web run dev",
     "build": "npm --prefix web run build",
     "start": "node scripts/ensure-env.mjs && npm --prefix server start",
+    "electron:dev": "node scripts/ensure-env.mjs && node scripts/electron-dev.mjs",
+    "electron:dist": "node scripts/ensure-env.mjs && npm run build && electron-builder --dir",
+    "electron:build": "node scripts/ensure-env.mjs && npm run build && electron-builder --win nsis",
     "test": "npm --prefix server test",
+    "test:web": "npm --prefix web test",
     "test:extension:unit": "node --test extension/tests/mindweaver-client.test.js extension/tests/background-controller.test.js",
     "test:extension:integration": "node --test extension/tests/integration.test.js",
     "test:extension": "npm run test:extension:unit && npm run test:extension:integration",
-    "check": "npm test && npm run build",
+    "check": "npm test && npm run test:web && npm run test:extension:unit && npm run build",
     "eval:fixtures": "npm --prefix server run eval:fixtures"
   },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "lowdb": "^7.0.1",
+    "nanoid": "^5.0.7",
+    "openai": "^4.52.0"
+  },
   "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8",
     "playwright": "^1.59.1"
+  },
+  "build": {
+    "appId": "local.mindweaver.desktop",
+    "productName": "MindWeaver",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "web/dist/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.mjs"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "MindWeaver-Setup-${version}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

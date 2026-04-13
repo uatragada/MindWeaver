@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "node index.js",
+    "dev": "node --watch index.js",
     "start": "node index.js",
     "test": "node --test tests/api.test.js",
     "eval:fixtures": "node scripts/eval-fixtures.mjs"

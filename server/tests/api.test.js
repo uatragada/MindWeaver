@@ -14,6 +14,63 @@ function createMockOpenAI() {
         async create({ messages }) {
           const prompt = messages.map((message) => message.content).join("\n");
 
+          if (prompt.includes("Refine this MindWeaver map")) {
+            const marker = "Refine this MindWeaver map without deleting useful information unnecessarily.";
+            const markerIndex = prompt.indexOf(marker);
+            const jsonStart = markerIndex >= 0 ? prompt.indexOf("{", markerIndex) : -1;
+            let snapshot = {};
+            if (jsonStart >= 0) {
+              try {
+                snapshot = JSON.parse(prompt.slice(jsonStart));
+              } catch {
+                snapshot = {};
+              }
+            }
+            const nodes = Array.isArray(snapshot?.nodes) ? snapshot.nodes : [];
+            const edges = Array.isArray(snapshot?.edges) ? snapshot.edges : [];
+            const findNode = (label) => nodes.find((node) => String(node.label).toLowerCase() === label.toLowerCase());
+            const brokerNode = findNode("message brokers") ?? findNode("queue brokers") ?? findNode("queue broker") ?? findNode("message broker");
+            const queueNode = findNode("event queue");
+            const goalNode = nodes.find((node) => node.type === "goal") ?? null;
+            const goalToQueueEdge = goalNode && queueNode
+              ? edges.find((edge) => edge.source === goalNode.id && edge.target === queueNode.id)
+              : null;
+
+            return {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      summary: "Tightened the hierarchy by renaming the broker node, merging the duplicate queue concept, and cleaning up the misplaced top-level edge.",
+                      rename_nodes: brokerNode ? [
+                        {
+                          id: brokerNode.id,
+                          label: "message broker",
+                          description: "Infrastructure that routes and buffers events between producers and consumers.",
+                          type: "concept"
+                        }
+                      ] : [],
+                      merge_nodes: brokerNode && queueNode ? [
+                        {
+                          sourceId: queueNode.id,
+                          targetId: brokerNode.id,
+                          reason: "These labels are redundant in this test fixture."
+                        }
+                      ] : [],
+                      add_edges: [],
+                      remove_edges: goalToQueueEdge ? [
+                        {
+                          key: goalToQueueEdge.key,
+                          reason: "The queue node should not hang directly off the top-level goal once the duplicate is merged."
+                        }
+                      ] : []
+                    })
+                  }
+                }
+              ]
+            };
+          }
+
           if (prompt.includes("should_ingest")) {
             return {
               choices: [
@@ -27,6 +84,18 @@ function createMockOpenAI() {
           }
 
           if (prompt.includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}')) {
+            if (prompt.includes("Octet Concepts")) {
+              return {
+                choices: [
+                  {
+                    message: {
+                      content: '{"domain":"distributed systems","skill":"message flow","concepts":["producer","broker","consumer","retry policy","consumer lag","dead letter queue","idempotency key","partition leader","delivery guarantee","backpressure"]}'
+                    }
+                  }
+                ]
+              };
+            }
+
             if (prompt.includes("Consensus")) {
               return {
                 choices: [
@@ -111,6 +180,40 @@ test("POST /api/sessions creates a session and goal node", async () => {
     assert.equal(ctx.db.data.goals.length, 1);
     assert.equal(ctx.db.data.preferences.activeSessionId, body.id);
     assert.equal(ctx.db.data.nodes.some((node) => node.id === body.goalId && node.type === "goal"), true);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("PATCH /api/sessions/:id renames the map and syncs the matching primary goal node", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const createResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Original map name" })
+    });
+    const created = await createResponse.json();
+
+    const renameResponse = await fetch(`${ctx.baseUrl}/api/sessions/${created.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Renamed systems map" })
+    });
+    const renamed = await renameResponse.json();
+
+    assert.equal(renameResponse.status, 200);
+    assert.equal(renamed.ok, true);
+    assert.equal(renamed.session.goal, "Renamed systems map");
+    assert.equal(renamed.updatedPrimaryGoalNode, true);
+    assert.equal(renamed.sessionTarget.activeSession?.goal, "Renamed systems map");
+
+    const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${created.id}`);
+    const graph = await graphResponse.json();
+    assert.equal(graphResponse.status, 200);
+    assert.equal(graph.goals[0]?.title, "Renamed systems map");
+    assert.equal(graph.nodes.some((node) => node.id === created.goalId && node.label === "Renamed systems map"), true);
   } finally {
     await ctx.close();
   }
@@ -223,6 +326,475 @@ test("POST /api/ingest dedupes repeated URLs within a session", async () => {
     assert.equal(secondResponse.status, 200);
     assert.equal(secondBody.deduped, true);
     assert.equal(ctx.db.data.artifacts.length, 1);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("POST /api/ingest creates fresh nodes instead of reusing existing graph labels", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Fresh extraction map" })
+    });
+    const session = await sessionResponse.json();
+
+    const firstResponse = await fetch(`${ctx.baseUrl}/api/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        url: "https://example.com/fresh-node-a",
+        title: "Fresh Node Probe A",
+        excerpt: "A closure guide.",
+        content: "Closures let a function remember variables from its lexical scope. ".repeat(12)
+      })
+    });
+    const secondResponse = await fetch(`${ctx.baseUrl}/api/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        url: "https://example.com/fresh-node-b",
+        title: "Fresh Node Probe B",
+        excerpt: "Another closure guide.",
+        content: "Closures let a function remember variables from its lexical scope. ".repeat(12)
+      })
+    });
+
+    assert.equal(firstResponse.status, 200);
+    assert.equal(secondResponse.status, 200);
+
+    const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${session.id}`);
+    const graph = await graphResponse.json();
+    const closureNodes = graph.nodes.filter((node) => node.label === "closure" && node.type === "concept");
+    const javascriptNodes = graph.nodes.filter((node) => node.label === "javascript");
+
+    assert.equal(graphResponse.status, 200);
+    assert.equal(closureNodes.length, 2);
+    assert.equal(new Set(closureNodes.map((node) => node.id)).size, 2);
+    assert.equal(javascriptNodes.length, 2);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("POST /api/ingest keeps at most 8 concepts from the classification pass", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Octet classification map" })
+    });
+    const session = await sessionResponse.json();
+
+    const ingestResponse = await fetch(`${ctx.baseUrl}/api/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        url: "https://example.com/octet-concepts",
+        title: "Octet Concepts",
+        excerpt: "A dense systems article.",
+        content: "Producers, brokers, consumers, retries, lag, dead letter queues, idempotency, partition leaders, delivery guarantees, and backpressure all matter here. ".repeat(10)
+      })
+    });
+    const ingested = await ingestResponse.json();
+
+    assert.equal(ingestResponse.status, 200);
+    assert.equal(ingested.classification.concepts.length, 8);
+
+    const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${session.id}`);
+    const graph = await graphResponse.json();
+    assert.equal(graphResponse.status, 200);
+    assert.equal(graph.nodes.filter((node) => node.type === "concept").length, 8);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("chat history prompt and structured import turn third-party conversation context into map nodes", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Build a reliable event-driven onboarding map" })
+    });
+    const session = await sessionResponse.json();
+
+    const templateResponse = await fetch(`${ctx.baseUrl}/api/import-chat-history/template?provider=chatgpt&sessionId=${session.id}`);
+    const template = await templateResponse.json();
+    assert.equal(templateResponse.status, 200);
+    assert.equal(template.provider, "chatgpt");
+    assert.match(template.prompt, /Build a reliable event-driven onboarding map/);
+    assert.match(template.prompt, /mindweaver\.chat_import\.v1/);
+    assert.match(template.prompt, /ALL CONVERSATIONS/);
+    assert.match(template.prompt, /as much useful user context as possible/i);
+
+    const importPayload = {
+      schema_version: "mindweaver.chat_import.v1",
+      provider: "chatgpt",
+      title: "Assistant onboarding context",
+      summary: "The user repeatedly explores event-driven architecture, message handling, and operational blind spots that slow onboarding.",
+      conversation_highlights: [
+        {
+          title: "Recurring event-systems questions",
+          summary: "The user often comes back to brokers, consumers, and production debugging.",
+          concepts: ["consumer lag", "event consumer"]
+        }
+      ],
+      nodes: [
+        {
+          type: "domain",
+          label: "event-driven architecture",
+          description: "The user has durable interest in asynchronous services, brokers, and event flow design.",
+          confidence: 0.9,
+          evidence: ["Repeatedly asked about producers, consumers, and event delivery tradeoffs."]
+        },
+        {
+          type: "skill",
+          label: "message handling",
+          description: "The user is actively learning how to design and operate message-driven systems.",
+          confidence: 0.86,
+          evidence: ["Frequently asked how messages move through brokers and consumer pipelines."]
+        },
+        {
+          type: "concept",
+          label: "consumer lag",
+          description: "A recurring operational concept tied to slow or backlogged consumers.",
+          confidence: 0.82,
+          aliases: ["lag monitoring"],
+          evidence: ["Asked how to detect when consumers fall behind real-time traffic."]
+        },
+        {
+          type: "concept",
+          label: "event consumer",
+          description: "The user often reasons about services that subscribe to and process messages.",
+          confidence: 0.8,
+          evidence: ["Compared consumer responsibilities across several system-design conversations."]
+        }
+      ],
+      relationships: [
+        { source: "event-driven architecture", target: "message handling", type: "contains", label: "contains" },
+        { source: "message handling", target: "consumer lag", type: "builds_on", label: "builds_on" },
+        { source: "message handling", target: "event consumer", type: "builds_on", label: "builds_on" }
+      ]
+    };
+
+    const importResponse = await fetch(`${ctx.baseUrl}/api/import-chat-history`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        importData: importPayload
+      })
+    });
+    const imported = await importResponse.json();
+    assert.equal(importResponse.status, 200);
+    assert.equal(imported.deduped, false);
+    assert.equal(imported.importedNodeCount, 4);
+    assert.equal(imported.importedRelationshipCount, 3);
+
+    const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${session.id}`);
+    const graph = await graphResponse.json();
+    assert.equal(graphResponse.status, 200);
+    assert.equal(graph.artifacts.some((artifact) => artifact.sourceType === "chatgpt"), true);
+    assert.equal(graph.nodes.some((node) => node.label === "event driven architecture"), true);
+    assert.equal(graph.nodes.some((node) => node.label === "message handling"), true);
+    assert.equal(graph.nodes.some((node) => node.label === "consumer lag" && node.evidenceCount >= 1), true);
+    assert.equal(graph.edges.some((edge) => edge.type === "builds_on" && (typeof edge.target === "object" ? edge.target.id : edge.target).includes("consumer lag")), true);
+
+    const dedupeResponse = await fetch(`${ctx.baseUrl}/api/import-chat-history`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        importData: importPayload
+      })
+    });
+    const deduped = await dedupeResponse.json();
+    assert.equal(dedupeResponse.status, 200);
+    assert.equal(deduped.deduped, true);
+    assert.equal(ctx.db.data.artifacts.filter((artifact) => artifact.sessionId === session.id && artifact.sourceType === "chatgpt").length, 1);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("chat history imports accept payloads larger than the old node cap", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Import a full cross-conversation context map" })
+    });
+    const session = await sessionResponse.json();
+
+    const nodes = [
+      {
+        type: "domain",
+        label: "full conversation context",
+        description: "Top-level domain that represents the user's imported cross-conversation context.",
+        confidence: 0.92,
+        evidence: ["The user wants to import as much durable context as possible."]
+      },
+      {
+        type: "skill",
+        label: "conversation synthesis",
+        description: "The user repeatedly consolidates broad conversation history into structured knowledge.",
+        confidence: 0.9,
+        evidence: ["The user asked for a comprehensive cross-conversation import."]
+      }
+    ];
+    const relationships = [
+      {
+        source: "full conversation context",
+        target: "conversation synthesis",
+        type: "contains",
+        label: "contains"
+      }
+    ];
+
+    for (let index = 0; index < 175; index += 1) {
+      const label = `history concept ${index + 1}`;
+      nodes.push({
+        type: "concept",
+        label,
+        description: `Imported concept ${index + 1} from the user's broader conversation history.`,
+        confidence: 0.79,
+        evidence: [`Conversation thread ${index + 1} reinforces this durable concept.`]
+      });
+      relationships.push({
+        source: "conversation synthesis",
+        target: label,
+        type: "builds_on",
+        label: "builds_on"
+      });
+    }
+
+    const importResponse = await fetch(`${ctx.baseUrl}/api/import-chat-history`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        importData: {
+          schema_version: "mindweaver.chat_import.v1",
+          provider: "chatgpt",
+          title: "Large assistant context import",
+          summary: "A deliberately large import payload to confirm the backend accepts rich conversation-history maps without schema-level node caps.",
+          conversation_highlights: [],
+          nodes,
+          relationships
+        }
+      })
+    });
+    const imported = await importResponse.json();
+
+    assert.equal(importResponse.status, 200);
+    assert.equal(imported.importedNodeCount, nodes.length);
+    assert.equal(imported.importedRelationshipCount, relationships.length);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("chat history imports merge duplicate labels and skip self-links", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Import resilient chat history context" })
+    });
+    const session = await sessionResponse.json();
+
+    const importResponse = await fetch(`${ctx.baseUrl}/api/import-chat-history`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        importData: {
+          schema_version: "mindweaver.chat_import.v1",
+          provider: "chatgpt",
+          title: "Duplicate-heavy assistant context",
+          summary: "This payload intentionally includes duplicate labels and self-link edges so the importer can prove it normalizes noisy LLM output.",
+          conversation_highlights: [
+            {
+              title: "Context synthesis",
+              summary: "The user wants to import conversation history cleanly."
+            }
+          ],
+          nodes: [
+            {
+              type: "domain",
+              label: "distributed systems",
+              description: "Primary domain node.",
+              confidence: 0.92,
+              evidence: ["The user repeatedly explores asynchronous architectures."]
+            },
+            {
+              type: "domain",
+              label: "distributed-system",
+              description: "Duplicate normalized label with extra evidence.",
+              confidence: 0.88,
+              aliases: ["event systems"],
+              evidence: ["The user compares brokers, queues, and consumers."]
+            },
+            {
+              type: "skill",
+              label: "event handling",
+              description: "Skill connected to the domain.",
+              confidence: 0.85,
+              evidence: ["The user asks about delivery guarantees and message flow."]
+            }
+          ],
+          relationships: [
+            { source: "distributed systems", target: "event handling", type: "contains", label: "contains" },
+            { source: "distributed-system", target: "distributed systems", type: "related", label: "related" }
+          ]
+        }
+      })
+    });
+    const imported = await importResponse.json();
+
+    assert.equal(importResponse.status, 200);
+    assert.equal(imported.importedNodeCount, 2);
+    assert.equal(imported.importedRelationshipCount, 1);
+    assert.equal(Array.isArray(imported.warnings), true);
+    assert.equal(imported.warnings.some((warning) => /Merged 1 duplicate node label/i.test(warning)), true);
+    assert.equal(imported.warnings.some((warning) => /Skipped 1 self-link relationship/i.test(warning)), true);
+
+    const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${session.id}`);
+    const graph = await graphResponse.json();
+    assert.equal(graphResponse.status, 200);
+    assert.equal(graph.nodes.filter((node) => node.label === "distributed system").length, 1);
+    assert.equal(graph.edges.filter((edge) => edge.type === "contains").length >= 1, true);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("POST /api/nodes can create a primary goal node for a map that started unnamed", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    const session = await sessionResponse.json();
+
+    const nodeResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "goal",
+        label: "Build a reliable systems map"
+      })
+    });
+    const created = await nodeResponse.json();
+
+    assert.equal(nodeResponse.status, 200);
+    assert.equal(created.goalCreated, true);
+    assert.equal(created.node.type, "goal");
+    assert.equal(created.node.label, "Build a reliable systems map");
+    assert.equal(created.graph.goals.length, 1);
+    assert.equal(ctx.db.data.sessions.find((entry) => entry.id === session.id)?.goal, "Build a reliable systems map");
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("POST /api/refine renames, merges, and cleans weak edges conservatively", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Distributed systems map" })
+    });
+    const session = await sessionResponse.json();
+
+    const brokerResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "concept",
+        label: "queue brokers"
+      })
+    });
+    const brokerNode = (await brokerResponse.json()).node;
+
+    const queueResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "concept",
+        label: "event queue"
+      })
+    });
+    const queueNode = (await queueResponse.json()).node;
+
+    const refineResponse = await fetch(`${ctx.baseUrl}/api/refine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: session.id })
+    });
+    const refined = await refineResponse.json();
+
+    assert.equal(refineResponse.status, 200);
+    assert.equal(refined.ok, true);
+    assert.equal(refined.applied.renamed, 1);
+    assert.equal(refined.applied.merged, 1);
+    assert.equal(refined.applied.removedEdges, 1);
+    assert.equal(refined.graph.nodes.some((node) => node.id === brokerNode.id && node.label === "message broker"), true);
+    assert.equal(refined.graph.nodes.some((node) => node.id === queueNode.id), false);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("DELETE /api/sessions/:id returns fresh target state without the deleted map", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const firstResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "First map" })
+    });
+    const first = await firstResponse.json();
+
+    const secondResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Second map" })
+    });
+    const second = await secondResponse.json();
+
+    const deleteResponse = await fetch(`${ctx.baseUrl}/api/sessions/${second.id}`, { method: "DELETE" });
+    const deleted = await deleteResponse.json();
+
+    assert.equal(deleteResponse.status, 200);
+    assert.equal(deleted.deletedSessionId, second.id);
+    assert.equal(deleted.sessionTarget.sessions.some((entry) => entry.id === second.id), false);
+    assert.equal(deleted.sessionTarget.activeSessionId, null);
+    assert.equal(deleted.sessionTarget.lastSessionId, first.id);
   } finally {
     await ctx.close();
   }

@@ -58,7 +58,8 @@ test("sendToMindWeaver skips capture when no map is active", async () => {
     lastCaptureTitle: "Example",
     lastCaptureStatus: "skipped",
     lastCaptureMessage: "Choose or create a destination map before saving evidence.",
-    lastCaptureTarget: ""
+    lastCaptureTarget: "",
+    lastCaptureTargetId: ""
   });
 });
 
@@ -99,6 +100,7 @@ test("sendToMindWeaver posts highlights through the import endpoint and records 
   assert.match(requests[0].options.body, /session-b/);
   assert.equal(chromeApi.storageState.lastCaptureStatus, "captured");
   assert.equal(chromeApi.storageState.lastCaptureTarget, "Queue patterns");
+  assert.equal(chromeApi.storageState.lastCaptureTargetId, "session-b");
 });
 
 test("captureActiveTab injects the extractor and saves the resulting page payload", async () => {
@@ -142,4 +144,5 @@ test("captureActiveTab injects the extractor and saves the resulting page payloa
   assert.equal(result.ok, true);
   assert.equal(result.body.deduped, true);
   assert.equal(chromeApi.storageState.lastCaptureStatus, "deduped");
+  assert.equal(chromeApi.storageState.lastCaptureTargetId, "session-a");
 });
