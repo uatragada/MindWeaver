@@ -1,6 +1,8 @@
 import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import SelectControl from "./components/controls/SelectControl.jsx";
+import GraphMiniMap from "./components/graph/GraphMiniMap.jsx";
+import MarkdownNotePreview from "./components/notes/MarkdownNotePreview.js";
 import MapOverviewCard from "./components/panels/MapOverviewCard.jsx";
 import MapStructurePanel from "./components/panels/MapStructurePanel.jsx";
 import { useLocalStorageState } from "./hooks/useLocalStorageState.js";
@@ -13,27 +15,50 @@ import {
   DEFAULT_TAB_VIEW,
   EMPTY_IMPORT_FORM,
   EMPTY_QUIZ_STATE,
+  GRAPH_COLOR_MODE_OPTIONS,
+  GRAPH_FOCUS_DEPTH_OPTIONS,
+  GRAPH_FOCUS_MODE_OPTIONS,
+  GRAPH_VIEW_PRESET_OPTIONS,
   LLM_PROVIDER_OPTIONS,
   LOCAL_LLM_MODEL_OPTIONS,
   MASTERY_OPTIONS,
   NODE_TYPE_OPTIONS,
   RELATIONSHIP_TYPE_OPTIONS,
   RIGHT_PANEL_LABELS,
+  SEMANTIC_ROLE_OPTIONS,
   SOURCE_TYPE_OPTIONS,
   TAB_VIEW_STORAGE_KEY,
   visibleNodeTypes
 } from "./lib/app-constants.js";
 import { getChatHistoryImportPreview } from "./lib/chat-import-preview.js";
 import {
+  drawArrowHead,
   createNodeCollisionForce,
   drawRoundedRect,
   getChargeStrength,
   getLinkDistance,
   getLinkVisualStyle,
+  getNodeFont,
   getNodeMetrics,
+  getNodeRenderDetail,
+  getBranchVisualStyle,
+  getNodeVisualStyle,
   NODE_HIERARCHY_LEVELS,
-  NODE_TYPE_LEGEND
+  NODE_TYPE_LEGEND,
+  withAlpha
 } from "./lib/graph-rendering.js";
+import {
+  buildDomainMembership,
+  buildGraphIndex,
+  collectCollapsedNodeIds,
+  collectReachableSubgraph,
+  getAncestorAtLevel,
+  getBranchColorKey,
+  getHierarchyPath,
+  getSortedConnectedNodes,
+  isHierarchyLinkType,
+  UNGROUPED_DOMAIN_ID
+} from "./lib/graph-view.js";
 import {
   describeReviewDate,
   downloadTextFile,
@@ -45,15 +70,25 @@ import {
 } from "./lib/formatting.js";
 import "./app.css";
 
+const SEMANTIC_ROLE_VALUES = SEMANTIC_ROLE_OPTIONS.map((option) => option.value);
+
+function areStringArraysEqual(left, right) {
+  if (left === right) return true;
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
 export default function App() {
   const [sessionId, navigateToSession] = useSessionRoute();
   const fgRef = useRef(null);
   const graphContainerRef = useRef(null);
+  const nodeNoteTextareaRef = useRef(null);
   const rightRailRef = useRef(null);
   const tabViewHydrationRef = useRef(null);
   const sessionCacheHydrationRef = useRef(null);
   const graphFitTimersRef = useRef([]);
   const pendingGraphFitRef = useRef(false);
+  const lastCompletedViewportFitKeyRef = useRef("");
 
   const [graphState, setGraphState] = useState(null);
   const [healthState, setHealthState] = useState(null);
@@ -75,9 +110,11 @@ export default function App() {
   const [tabViewState, setTabViewState] = useLocalStorageState(TAB_VIEW_STORAGE_KEY, {});
   const [sessionCache, setSessionCache] = useState({});
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState([]);
   const [rightPanel, setRightPanel] = useState("inspector");
   const [leftRailMinimized, setLeftRailMinimized] = useState(false);
   const [rightRailMinimized, setRightRailMinimized] = useState(true);
+  const [mapTabsCollapsed, setMapTabsCollapsed] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [homeErrorMessage, setHomeErrorMessage] = useState("");
@@ -112,11 +149,19 @@ export default function App() {
   const [chatImportErrorMessage, setChatImportErrorMessage] = useState("");
   const [startGoal, setStartGoal] = useState("");
   const [tabComposerGoal, setTabComposerGoal] = useState("");
+  const [quickAddNodeType, setQuickAddNodeType] = useState("area");
   const [mapNameDraft, setMapNameDraft] = useState("");
   const [goalNodeDraft, setGoalNodeDraft] = useState("");
   const [graphSize, setGraphSize] = useState({ width: 900, height: 640 });
+  const [graphViewport, setGraphViewport] = useState({ centerX: 0, centerY: 0, zoom: 1 });
   const [nodeSearch, setNodeSearch] = useState("");
   const [nodeTypeFilter, setNodeTypeFilter] = useState("all");
+  const [graphColorMode, setGraphColorMode] = useState(DEFAULT_TAB_VIEW.graphColorMode);
+  const [graphPreset, setGraphPreset] = useState(DEFAULT_TAB_VIEW.graphPreset);
+  const [focusMode, setFocusMode] = useState(DEFAULT_TAB_VIEW.focusMode);
+  const [focusDepth, setFocusDepth] = useState(DEFAULT_TAB_VIEW.focusDepth);
+  const [hideUnrelated, setHideUnrelated] = useState(DEFAULT_TAB_VIEW.hideUnrelated);
+  const [collapsedNodeIds, setCollapsedNodeIds] = useState(DEFAULT_TAB_VIEW.collapsedNodeIds);
   const [searchResults, setSearchResults] = useState([]);
   const [isSearchingGraph, setIsSearchingGraph] = useState(false);
   const [chatQuestion, setChatQuestion] = useState("");
@@ -133,13 +178,26 @@ export default function App() {
   const [intersectionTargetId, setIntersectionTargetId] = useState("");
   const [intersectionResult, setIntersectionResult] = useState(null);
   const [isIntersecting, setIsIntersecting] = useState(false);
-  const [nodeEditForm, setNodeEditForm] = useState({ label: "", description: "", summary: "", masteryState: "new" });
+  const [nodeEditForm, setNodeEditForm] = useState({
+    label: "",
+    description: "",
+    summary: "",
+    masteryState: "new",
+    primaryRole: "concept",
+    secondaryRoles: []
+  });
   const [isSavingNode, setIsSavingNode] = useState(false);
+  const [nodeNoteDraft, setNodeNoteDraft] = useState("");
+  const [isNodeNoteEditorOpen, setIsNodeNoteEditorOpen] = useState(false);
+  const [nodeNoteEditorMode, setNodeNoteEditorMode] = useState("edit");
+  const [isNodeNoteFullscreen, setIsNodeNoteFullscreen] = useState(false);
+  const [isSavingNodeNote, setIsSavingNodeNote] = useState(false);
   const [mergeTargetId, setMergeTargetId] = useState("");
   const [isMergingNode, setIsMergingNode] = useState(false);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const [isDeletingArtifact, setIsDeletingArtifact] = useState(false);
   const [isGraphViewportReady, setIsGraphViewportReady] = useState(false);
+  const [pinnedNodePositions, setPinnedNodePositions] = useState({});
   const deferredNodeSearch = useDeferredValue(nodeSearch);
   const chatHistoryImportPreview = useMemo(() => getChatHistoryImportPreview(chatImportJson), [chatImportJson]);
 
@@ -259,6 +317,44 @@ export default function App() {
     }
   }, []);
 
+  const clearGraphSelection = useCallback(() => {
+    setSelectedNodeId(null);
+    setSelectedNodeIds([]);
+    setIntersectionTargetId("");
+    setIntersectionResult(null);
+  }, []);
+
+  const selectGraphNode = useCallback((nextNodeId, { additive = false } = {}) => {
+    let nextSelectedNodeId = nextNodeId ? String(nextNodeId) : null;
+    let nextSelectedNodeIds = nextSelectedNodeId ? [nextSelectedNodeId] : [];
+
+    setSelectedNodeIds((current) => {
+      const normalizedCurrent = [...new Set((Array.isArray(current) ? current : []).filter(Boolean))];
+      if (!additive) {
+        nextSelectedNodeIds = nextSelectedNodeId ? [nextSelectedNodeId] : [];
+        return nextSelectedNodeIds;
+      }
+
+      if (!nextSelectedNodeId) {
+        nextSelectedNodeIds = [];
+        return nextSelectedNodeIds;
+      }
+
+      if (normalizedCurrent.includes(nextSelectedNodeId)) {
+        nextSelectedNodeIds = normalizedCurrent.filter((nodeId) => nodeId !== nextSelectedNodeId);
+        nextSelectedNodeId = nextSelectedNodeIds[nextSelectedNodeIds.length - 1] ?? null;
+        return nextSelectedNodeIds;
+      }
+
+      nextSelectedNodeIds = [...normalizedCurrent, nextSelectedNodeId];
+      return nextSelectedNodeIds;
+    });
+
+    setSelectedNodeId(nextSelectedNodeId);
+    setIntersectionTargetId("");
+    setIntersectionResult(null);
+  }, []);
+
   const openSessionTab = useCallback((nextSessionId) => {
     if (!nextSessionId) return;
     setOpenTabs((current) => (current.includes(nextSessionId) ? current : [...current, nextSessionId]));
@@ -372,16 +468,26 @@ export default function App() {
       setLearningSummary(null);
       setBulkImportText("");
       setSelectedNodeId(null);
+      setSelectedNodeIds(DEFAULT_TAB_VIEW.selectedNodeIds);
       setRightPanel(DEFAULT_TAB_VIEW.rightPanel);
       setLeftRailMinimized(DEFAULT_TAB_VIEW.leftRailMinimized);
       setRightRailMinimized(DEFAULT_TAB_VIEW.rightRailMinimized);
       setNodeSearch(DEFAULT_TAB_VIEW.nodeSearch);
       setNodeTypeFilter(DEFAULT_TAB_VIEW.nodeTypeFilter);
+      setGraphColorMode(DEFAULT_TAB_VIEW.graphColorMode);
+      setGraphPreset(DEFAULT_TAB_VIEW.graphPreset);
+      setFocusMode(DEFAULT_TAB_VIEW.focusMode);
+      setFocusDepth(DEFAULT_TAB_VIEW.focusDepth);
+      setHideUnrelated(DEFAULT_TAB_VIEW.hideUnrelated);
+      setCollapsedNodeIds(DEFAULT_TAB_VIEW.collapsedNodeIds);
       setChatImportPrompt("");
       setChatImportJson("");
       setChatImportErrorMessage("");
+      setQuickAddNodeType("area");
       setGoalNodeDraft("");
       setIsGraphViewportReady(false);
+      setGraphViewport({ centerX: 0, centerY: 0, zoom: 1 });
+      setPinnedNodePositions({});
       return;
     }
 
@@ -401,14 +507,23 @@ export default function App() {
     setBulkImportText(cachedSession.bulkImportText ?? "");
     tabViewHydrationRef.current = sessionId;
     setSelectedNodeId(cachedTabView.selectedNodeId ?? null);
+    setSelectedNodeIds(Array.isArray(cachedTabView.selectedNodeIds) ? cachedTabView.selectedNodeIds : DEFAULT_TAB_VIEW.selectedNodeIds);
     setRightPanel(cachedTabView.rightPanel ?? DEFAULT_TAB_VIEW.rightPanel);
     setLeftRailMinimized(cachedTabView.leftRailMinimized ?? DEFAULT_TAB_VIEW.leftRailMinimized);
     setRightRailMinimized(cachedTabView.rightRailMinimized ?? DEFAULT_TAB_VIEW.rightRailMinimized);
     setNodeSearch(cachedTabView.nodeSearch ?? DEFAULT_TAB_VIEW.nodeSearch);
     setNodeTypeFilter(cachedTabView.nodeTypeFilter ?? DEFAULT_TAB_VIEW.nodeTypeFilter);
+    setGraphColorMode(cachedTabView.graphColorMode ?? DEFAULT_TAB_VIEW.graphColorMode);
+    setGraphPreset(cachedTabView.graphPreset ?? DEFAULT_TAB_VIEW.graphPreset);
+    setFocusMode(cachedTabView.focusMode ?? DEFAULT_TAB_VIEW.focusMode);
+    setFocusDepth(cachedTabView.focusDepth ?? DEFAULT_TAB_VIEW.focusDepth);
+    setHideUnrelated(cachedTabView.hideUnrelated ?? DEFAULT_TAB_VIEW.hideUnrelated);
+    setCollapsedNodeIds(Array.isArray(cachedTabView.collapsedNodeIds) ? cachedTabView.collapsedNodeIds : DEFAULT_TAB_VIEW.collapsedNodeIds);
     setChatImportPrompt("");
     setChatImportJson("");
     setChatImportErrorMessage("");
+    setGraphViewport({ centerX: 0, centerY: 0, zoom: 1 });
+    setPinnedNodePositions({});
   }, [sessionId]);
 
   useEffect(() => {
@@ -422,14 +537,49 @@ export default function App() {
       ...current,
       [sessionId]: {
         selectedNodeId,
+        selectedNodeIds,
         rightPanel,
         leftRailMinimized,
         rightRailMinimized,
         nodeSearch,
-        nodeTypeFilter
+        nodeTypeFilter,
+        graphColorMode,
+        graphPreset,
+        focusMode,
+        focusDepth,
+        hideUnrelated,
+        collapsedNodeIds
       }
     }));
-  }, [leftRailMinimized, nodeSearch, nodeTypeFilter, rightPanel, rightRailMinimized, selectedNodeId, sessionId, setTabViewState]);
+  }, [
+    collapsedNodeIds,
+    focusDepth,
+    focusMode,
+    graphColorMode,
+    graphPreset,
+    hideUnrelated,
+    leftRailMinimized,
+    nodeSearch,
+    nodeTypeFilter,
+    rightPanel,
+    rightRailMinimized,
+    selectedNodeId,
+    selectedNodeIds,
+    sessionId,
+    setTabViewState
+  ]);
+
+  useEffect(() => {
+    setSelectedNodeIds((current) => {
+      const normalizedCurrent = [...new Set((Array.isArray(current) ? current : []).filter(Boolean))];
+      if (!selectedNodeId) {
+        return normalizedCurrent.length ? [] : normalizedCurrent;
+      }
+      if (!normalizedCurrent.length) return [selectedNodeId];
+      if (normalizedCurrent.includes(selectedNodeId)) return normalizedCurrent;
+      return [selectedNodeId];
+    });
+  }, [selectedNodeId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -483,9 +633,15 @@ export default function App() {
       setGraphState(data);
       if (progress) setProgressState(progress);
       setGapSummary((current) => current ?? data.latestGapAnalysis ?? null);
+      const visibleGraphNodeIds = new Set((data.nodes ?? [])
+        .filter((node) => visibleNodeTypes.includes(node.type))
+        .map((node) => node.id));
+      const firstVisibleNodeId = data.reviewQueue?.find((node) => visibleGraphNodeIds.has(node.id))?.id
+        ?? (data.nodes ?? []).find((node) => visibleGraphNodeIds.has(node.id))?.id
+        ?? null;
       setSelectedNodeId((current) => {
-        if (!current) return data.reviewQueue?.[0]?.id ?? data.nodes?.[0]?.id ?? null;
-        return data.nodes.some((node) => node.id === current) ? current : data.reviewQueue?.[0]?.id ?? data.nodes?.[0]?.id ?? null;
+        if (!current) return firstVisibleNodeId;
+        return visibleGraphNodeIds.has(current) ? current : firstVisibleNodeId;
       });
     } catch (error) {
       if (error.status === 404) {
@@ -722,6 +878,43 @@ export default function App() {
     () => graphState?.nodes?.find((node) => node.id === selectedNodeId) ?? null,
     [graphState, selectedNodeId]
   );
+  const graphIndex = useMemo(() => buildGraphIndex(graphState), [graphState]);
+  const domainMembership = useMemo(() => buildDomainMembership(graphIndex), [graphIndex]);
+  const selectedNodeIdList = useMemo(
+    () => [...new Set((Array.isArray(selectedNodeIds) ? selectedNodeIds : []).filter((nodeId) => graphIndex.nodesById.has(nodeId)))],
+    [graphIndex, selectedNodeIds]
+  );
+  const selectedNodeIdSet = useMemo(() => new Set(selectedNodeIdList), [selectedNodeIdList]);
+  const selectedGroupNodes = useMemo(
+    () => selectedNodeIdList.map((nodeId) => graphIndex.nodesById.get(nodeId)).filter(Boolean),
+    [graphIndex, selectedNodeIdList]
+  );
+  const focusTraversal = useMemo(() => {
+    if (!selectedNodeId || focusMode === "none") {
+      return { nodeIds: new Set(), edgeKeys: new Set(), depthByNodeId: new Map() };
+    }
+
+    return collectReachableSubgraph(graphIndex, selectedNodeId, {
+      direction: focusMode,
+      maxDepth: focusDepth === "neighbors" ? 1 : Number.POSITIVE_INFINITY
+    });
+  }, [focusDepth, focusMode, graphIndex, selectedNodeId]);
+  const collapsedState = useMemo(
+    () => collectCollapsedNodeIds(graphIndex, collapsedNodeIds),
+    [collapsedNodeIds, graphIndex]
+  );
+  const pathToRoot = useMemo(
+    () => getHierarchyPath(graphIndex, selectedNodeId, ["goal", "area", "domain"]),
+    [graphIndex, selectedNodeId]
+  );
+  const pathToDomain = useMemo(
+    () => getHierarchyPath(graphIndex, selectedNodeId, ["domain"]),
+    [graphIndex, selectedNodeId]
+  );
+  const breadcrumbNodes = useMemo(
+    () => pathToRoot.nodeIds.map((nodeId) => graphIndex.nodesById.get(nodeId)).filter(Boolean),
+    [graphIndex, pathToRoot]
+  );
   const currentMapNameValue = String(graphState?.session?.goal ?? "");
   const primaryGoalNode = useMemo(() => {
     const storedGoalId = graphState?.goals?.[0]?.id ?? null;
@@ -745,17 +938,54 @@ export default function App() {
   const hasMapNameChanges = trimmedMapNameDraft !== currentMapNameValue.trim();
 
   useEffect(() => {
+    if (!graphState) return;
+
+    const validNodeIds = new Set((graphState.nodes ?? []).map((node) => node.id));
+    setSelectedNodeIds((current) => {
+      const next = current.filter((nodeId) => validNodeIds.has(nodeId));
+      return areStringArraysEqual(current, next) ? current : next;
+    });
+    setCollapsedNodeIds((current) => {
+      const next = current.filter((nodeId) => validNodeIds.has(nodeId));
+      return areStringArraysEqual(current, next) ? current : next;
+    });
+    setPinnedNodePositions((current) => {
+      const nextEntries = Object.entries(current).filter(([nodeId]) => validNodeIds.has(nodeId));
+      return nextEntries.length === Object.keys(current).length ? current : Object.fromEntries(nextEntries);
+    });
+  }, [graphState]);
+
+  useEffect(() => {
     if (!selectedNode) return;
     setNodeEditForm({
       label: selectedNode.label || "",
       description: selectedNode.description || "",
       summary: selectedNode.summary || "",
-      masteryState: selectedNode.masteryState || "new"
+      masteryState: selectedNode.masteryState || "new",
+      primaryRole: selectedNode.primaryRole || selectedNode.type || "concept",
+      secondaryRoles: Array.isArray(selectedNode.secondaryRoles) ? selectedNode.secondaryRoles : []
     });
     setMergeTargetId("");
     setIntersectionTargetId("");
     setIntersectionResult(null);
   }, [selectedNode?.id]);
+
+  useEffect(() => {
+    const nextNote = selectedNode?.note || "";
+    const hasSelectedNote = Boolean(nextNote.trim());
+    setNodeNoteDraft(nextNote);
+    setNodeNoteEditorMode((current) => {
+      if (isNodeNoteEditorOpen) {
+        return current === "preview" && !hasSelectedNote ? "edit" : current;
+      }
+      return hasSelectedNote ? "preview" : "edit";
+    });
+  }, [isNodeNoteEditorOpen, selectedNode?.id, selectedNode?.note]);
+
+  useEffect(() => {
+    if (!isNodeNoteEditorOpen || nodeNoteEditorMode !== "edit") return;
+    nodeNoteTextareaRef.current?.focus();
+  }, [isNodeNoteEditorOpen, nodeNoteEditorMode, selectedNode?.id]);
 
   const nodeHierarchyById = useMemo(() => {
     if (!graphState) return new Map();
@@ -768,12 +998,13 @@ export default function App() {
     const incomingCountById = new Map(visibleNodes.map((node) => [node.id, 0]));
 
     graphState.edges.forEach((edge) => {
+      if (!isHierarchyLinkType(edge.type)) return;
       if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) return;
       outgoingById.get(edge.source)?.push(edge.target);
       incomingCountById.set(edge.target, (incomingCountById.get(edge.target) ?? 0) + 1);
     });
 
-    let rootIds = visibleNodes.filter((node) => node.type === "goal").map((node) => node.id);
+    let rootIds = visibleNodes.filter((node) => ["goal", "area"].includes(node.type)).map((node) => node.id);
     if (!rootIds.length) {
       rootIds = visibleNodes
         .filter((node) => (incomingCountById.get(node.id) ?? 0) === 0)
@@ -811,7 +1042,7 @@ export default function App() {
       visibleNodes.map((node) => {
         const incomingCount = incomingCountById.get(node.id) ?? 0;
         const outgoingCount = (outgoingById.get(node.id) ?? []).length;
-        const fallbackDepth = NODE_HIERARCHY_LEVELS[node.type] ?? 3;
+        const fallbackDepth = NODE_HIERARCHY_LEVELS[node.type] ?? 5;
         const hierarchyDepth = depthById.get(node.id) ?? fallbackDepth;
         const depthScale = 1.14 - hierarchyDepth * 0.05;
         const branchBonus = Math.min(0.16, outgoingCount * 0.028);
@@ -831,43 +1062,167 @@ export default function App() {
     );
   }, [graphState]);
 
+  const pathNodeIds = useMemo(
+    () => new Set([...pathToRoot.nodeIds, ...pathToDomain.nodeIds]),
+    [pathToDomain, pathToRoot]
+  );
+  const pathEdgeKeys = useMemo(
+    () => new Set([...pathToRoot.edgeKeys, ...pathToDomain.edgeKeys]),
+    [pathToDomain, pathToRoot]
+  );
+  const reviewNodeIds = useMemo(
+    () => new Set((graphState?.reviewQueue ?? []).map((node) => node.id)),
+    [graphState?.reviewQueue]
+  );
+  const focusIsActive = Boolean(selectedNodeId && focusMode !== "none");
+  const highlightedNodeIds = useMemo(
+    () => new Set([...selectedNodeIdSet, ...focusTraversal.nodeIds, ...pathNodeIds]),
+    [focusTraversal, pathNodeIds, selectedNodeIdSet]
+  );
+  const highlightedEdgeKeys = useMemo(
+    () => new Set([...focusTraversal.edgeKeys, ...pathEdgeKeys]),
+    [focusTraversal, pathEdgeKeys]
+  );
+  const selectionVisibilitySignature = useMemo(() => {
+    if (!focusIsActive || !hideUnrelated) return "";
+    return [...new Set([
+      ...focusTraversal.nodeIds,
+      ...selectedNodeIdSet,
+      ...pathNodeIds
+    ])]
+      .sort()
+      .join("|");
+  }, [focusIsActive, focusTraversal, hideUnrelated, pathNodeIds, selectedNodeIdSet]);
+
   const graphData = useMemo(() => {
-    if (!graphState) return { nodes: [], links: [] };
+    if (!graphState) {
+      return {
+        nodes: [],
+        links: [],
+        domainGroups: []
+      };
+    }
 
     const query = deferredNodeSearch.trim().toLowerCase();
+    const persistedNodeStateById = new Map(
+      ((fgRef.current?.graphData?.().nodes) ?? [])
+        .filter((node) => node?.id)
+        .map((node) => [
+          node.id,
+          {
+            ...(Number.isFinite(node.x) ? { x: node.x } : {}),
+            ...(Number.isFinite(node.y) ? { y: node.y } : {}),
+            ...(Number.isFinite(node.vx) ? { vx: node.vx } : {}),
+            ...(Number.isFinite(node.vy) ? { vy: node.vy } : {}),
+            ...(Number.isFinite(node.fx) ? { fx: node.fx } : {}),
+            ...(Number.isFinite(node.fy) ? { fy: node.fy } : {})
+          }
+        ])
+    );
+    const visibleFocusNodeIds = selectionVisibilitySignature
+      ? new Set(selectionVisibilitySignature.split("|").filter(Boolean))
+      : null;
     const nodes = graphState.nodes
       .filter((node) => {
         if (!visibleNodeTypes.includes(node.type)) return false;
         if (nodeTypeFilter !== "all" && node.type !== nodeTypeFilter) return false;
         if (query && !node.label.toLowerCase().includes(query)) return false;
+        if (collapsedState.hiddenNodeIds.has(node.id)) return false;
+        if (visibleFocusNodeIds && !visibleFocusNodeIds.has(node.id)) return false;
         return true;
       })
-      .map((node) => ({
-        ...node,
-        ...(nodeHierarchyById.get(node.id) ?? {
-          hierarchyDepth: NODE_HIERARCHY_LEVELS[node.type] ?? 3,
-          hierarchyScale: 1,
-          hierarchyInDegree: 0,
-          hierarchyOutDegree: 0
-        })
-      }));
+      .map((node) => {
+        const branchColorKey = graphColorMode === "type" ? null : getBranchColorKey(graphIndex, node.id, graphColorMode);
+        const branchAncestor = graphColorMode === "type" ? null : getAncestorAtLevel(graphIndex, node.id, graphColorMode);
+        const branchStyle = graphColorMode === "type" ? null : getBranchVisualStyle(branchColorKey);
+        const persistedNodeState = persistedNodeStateById.get(node.id) ?? null;
+        return {
+          ...node,
+          ...(persistedNodeState ?? {}),
+          domainId: domainMembership.domainIdByNodeId.get(node.id) ?? (["goal", "area"].includes(node.type) ? null : UNGROUPED_DOMAIN_ID),
+          domainLabel: node.type === "goal"
+            ? "Goals"
+            : node.type === "area"
+              ? "Areas"
+              : domainMembership.groups.get(domainMembership.domainIdByNodeId.get(node.id) ?? UNGROUPED_DOMAIN_ID)?.label ?? "Ungrouped",
+          branchColorKey,
+          branchAncestorLabel: branchAncestor?.label ?? null,
+          colorOverrideFill: branchStyle?.fill,
+          colorOverrideStroke: branchStyle?.stroke,
+          colorOverrideShadowColor: branchStyle?.shadowColor,
+          colorOverrideSelectedStroke: branchStyle ? withAlpha("#ffffff", 0.98) : undefined,
+          collapsedDescendantCount: collapsedState.hiddenCountsByNodeId.get(node.id) ?? 0,
+          ...(nodeHierarchyById.get(node.id) ?? {
+            hierarchyDepth: NODE_HIERARCHY_LEVELS[node.type] ?? 5,
+            hierarchyScale: 1,
+            hierarchyInDegree: 0,
+            hierarchyOutDegree: 0
+          }),
+          ...(Number.isFinite(pinnedNodePositions[node.id]?.x) && Number.isFinite(pinnedNodePositions[node.id]?.y)
+            ? {
+                fx: pinnedNodePositions[node.id].x,
+                fy: pinnedNodePositions[node.id].y
+              }
+            : {})
+        };
+      })
+      .sort((left, right) => (NODE_HIERARCHY_LEVELS[left.type] ?? 99) - (NODE_HIERARCHY_LEVELS[right.type] ?? 99)
+        || left.label.localeCompare(right.label));
     const nodeIds = new Set(nodes.map((node) => node.id));
     const links = graphState.edges
-      .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
       .map((edge) => ({
         ...edge,
-        source: edge.source,
-        target: edge.target
+        sourceId: typeof edge.source === "object" ? edge.source.id : edge.source,
+        targetId: typeof edge.target === "object" ? edge.target.id : edge.target
+      }))
+      .filter((edge) => nodeIds.has(edge.sourceId) && nodeIds.has(edge.targetId))
+      .map((edge) => ({
+        ...edge,
+        source: edge.sourceId,
+        target: edge.targetId
       }));
+    const domainGroups = Array.from(
+      nodes.reduce((groups, node) => {
+        if (!node.domainId) return groups;
+        const domainNode = nodes.find((entry) => entry.id === node.domainId) ?? graphIndex.nodesById.get(node.domainId) ?? null;
+        const visualNode = domainNode ?? { type: node.type };
+        const style = getNodeVisualStyle(visualNode);
+          const group = groups.get(node.domainId) ?? {
+            id: node.domainId,
+            label: node.domainLabel,
+            fill: style.fill,
+            stroke: style.stroke,
+            nodes: []
+          };
 
-    return { nodes, links };
-  }, [deferredNodeSearch, graphState, nodeHierarchyById, nodeTypeFilter]);
+          group.nodes.push(node);
+          groups.set(node.domainId, group);
+          return groups;
+        }, new Map()).values()
+    ).filter((group) => group.nodes.length > 1);
 
+    return {
+      nodes,
+      links,
+      domainGroups
+    };
+  }, [
+    collapsedState,
+    deferredNodeSearch,
+    domainMembership,
+    graphColorMode,
+    graphIndex,
+    graphState,
+    nodeHierarchyById,
+    nodeTypeFilter,
+    pinnedNodePositions,
+    selectionVisibilitySignature
+  ]);
   const graphTopologySignature = useMemo(() => {
     if (!graphData.nodes.length) return "empty";
 
     const nodeIds = graphData.nodes
-      .map((node) => String(node.id))
+      .map((node) => `${String(node.id)}:${String(node.type)}:${Number.isFinite(node.hierarchyDepth) ? node.hierarchyDepth : ""}`)
       .sort();
     const linkKeys = graphData.links
       .map((link) => {
@@ -879,6 +1234,7 @@ export default function App() {
 
     return `${nodeIds.join("|")}::${linkKeys.join("|")}`;
   }, [graphData.links, graphData.nodes]);
+  const graphViewportFitKey = `${sessionId ?? "none"}:${graphTopologySignature}`;
 
   const localModelOptions = useMemo(() => {
     const providerModels = healthState?.llmProviders?.local?.models;
@@ -936,6 +1292,17 @@ export default function App() {
   const importIsTooLong = importContentLength > maxImportChars;
   const chatImportProviderLabel = CHAT_IMPORT_PROVIDER_OPTIONS.find((option) => option.value === chatImportProvider)?.label ?? "ChatGPT";
 
+  const syncGraphViewport = useCallback(() => {
+    if (!fgRef.current) return;
+    const center = fgRef.current.centerAt();
+    const zoom = fgRef.current.zoom();
+    setGraphViewport({
+      centerX: center.x,
+      centerY: center.y,
+      zoom
+    });
+  }, []);
+
   const fitGraphToViewport = useCallback((duration = 260) => {
     if (!fgRef.current || !graphData.nodes.length) return;
     const fitPadding = Math.max(104, Math.min(188, Math.round(graphSize.height * 0.26)));
@@ -944,26 +1311,31 @@ export default function App() {
 
   const finalizeGraphViewport = useCallback((duration = 260) => {
     fitGraphToViewport(duration);
+    lastCompletedViewportFitKeyRef.current = graphViewportFitKey;
     setIsGraphViewportReady(true);
-  }, [fitGraphToViewport]);
+  }, [fitGraphToViewport, graphViewportFitKey]);
 
   useEffect(() => {
     if (!fgRef.current || !graphData.nodes.length) {
       pendingGraphFitRef.current = false;
+      lastCompletedViewportFitKeyRef.current = graphViewportFitKey;
       setIsGraphViewportReady(graphData.nodes.length === 0);
       return;
     }
 
+    const collisionIterations = graphData.nodes.length >= 96 ? 1 : 2;
+    lastCompletedViewportFitKeyRef.current = "";
     setIsGraphViewportReady(false);
-    fgRef.current.d3Force("nodeCollision", createNodeCollisionForce());
+    fgRef.current.d3Force("nodeCollision", createNodeCollisionForce({ iterations: collisionIterations }));
     fgRef.current.d3Force("charge").strength(getChargeStrength(graphData.nodes.length));
     fgRef.current.d3Force("link").distance(getLinkDistance);
     pendingGraphFitRef.current = true;
     fgRef.current.d3ReheatSimulation();
-  }, [graphData.nodes.length, graphTopologySignature, sessionId]);
+  }, [graphData.nodes.length, graphViewportFitKey]);
 
   useEffect(() => {
     if (!graphData.nodes.length) return;
+    if (lastCompletedViewportFitKeyRef.current === graphViewportFitKey) return;
 
     graphFitTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
     graphFitTimersRef.current = [
@@ -983,7 +1355,7 @@ export default function App() {
       graphFitTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
       graphFitTimersRef.current = [];
     };
-  }, [fitGraphToViewport, graphSize.width, graphSize.height, leftRailMinimized, rightRailMinimized]);
+  }, [finalizeGraphViewport, graphData.nodes.length, graphViewportFitKey]);
 
   useEffect(() => {
     if (!graphData.nodes.length) return;
@@ -995,50 +1367,113 @@ export default function App() {
     }, 1400);
 
     return () => window.clearTimeout(fallbackTimer);
-  }, [finalizeGraphViewport, graphTopologySignature, graphData.nodes.length, sessionId]);
+  }, [finalizeGraphViewport, graphData.nodes.length, graphViewportFitKey]);
 
   const handleGraphEngineStop = useCallback(() => {
-    if (!pendingGraphFitRef.current) return;
+    if (!pendingGraphFitRef.current) {
+      syncGraphViewport();
+      return;
+    }
     pendingGraphFitRef.current = false;
     finalizeGraphViewport(400);
-  }, [finalizeGraphViewport]);
+  }, [finalizeGraphViewport, syncGraphViewport]);
 
   const selectedNodeConnections = useMemo(() => {
     if (!selectedNode) return { upstream: [], downstream: [] };
 
-    const resolveNode = (value) => {
-      const id = typeof value === "object" ? value.id : value;
-      return graphData.nodes.find((node) => node.id === id) ?? null;
-    };
+    const resolveNode = (nodeId) => graphIndex.nodesById.get(nodeId) ?? null;
 
     return {
-      upstream: graphData.links
-        .filter((link) => (typeof link.target === "object" ? link.target.id : link.target) === selectedNode.id)
-        .map((link) => ({
-          node: resolveNode(link.source),
-          label: link.label,
-          type: link.type,
-          key: link.key
+      upstream: (graphIndex.incomingEdgesById.get(selectedNode.id) ?? [])
+        .map((edge) => ({
+          node: resolveNode(edge.sourceId),
+          label: edge.label,
+          type: edge.type,
+          key: edge.key
         }))
-        .filter((entry) => entry.node),
-      downstream: graphData.links
-        .filter((link) => (typeof link.source === "object" ? link.source.id : link.source) === selectedNode.id)
-        .map((link) => ({
-          node: resolveNode(link.target),
-          label: link.label,
-          type: link.type,
-          key: link.key
+        .filter((entry) => entry.node && visibleNodeTypes.includes(entry.node.type))
+        .sort((left, right) => left.node.label.localeCompare(right.node.label)),
+      downstream: (graphIndex.outgoingEdgesById.get(selectedNode.id) ?? [])
+        .map((edge) => ({
+          node: resolveNode(edge.targetId),
+          label: edge.label,
+          type: edge.type,
+          key: edge.key
         }))
-        .filter((entry) => entry.node)
+        .filter((entry) => entry.node && visibleNodeTypes.includes(entry.node.type))
+        .sort((left, right) => left.node.label.localeCompare(right.node.label))
     };
-  }, [graphData, selectedNode]);
+  }, [graphIndex, selectedNode]);
+  const selectedDomainNode = useMemo(() => {
+    if (!selectedNode) return null;
+    const domainId = domainMembership.domainIdByNodeId.get(selectedNode.id);
+    if (!domainId || domainId === UNGROUPED_DOMAIN_ID) return null;
+    return graphIndex.nodesById.get(domainId) ?? null;
+  }, [domainMembership, graphIndex, selectedNode]);
+  const selectedHierarchyTraversal = useMemo(() => {
+    if (!selectedNode) return { nodeIds: new Set(), edgeKeys: new Set(), depthByNodeId: new Map() };
+    return collectReachableSubgraph(graphIndex, selectedNode.id, {
+      direction: "downstream",
+      edgeFilter: (edge) => isHierarchyLinkType(edge.type)
+    });
+  }, [graphIndex, selectedNode]);
+  const selectedDescendantCount = Math.max(0, selectedHierarchyTraversal.nodeIds.size - 1);
+  const selectedBranchNodeIds = useMemo(() => [...new Set([
+    ...selectedHierarchyTraversal.nodeIds,
+    ...focusTraversal.nodeIds,
+    ...selectedNodeIdSet,
+    ...pathNodeIds
+  ])], [focusTraversal, pathNodeIds, selectedHierarchyTraversal, selectedNodeIdSet]);
+  const isSelectedBranchPinned = useMemo(
+    () => selectedBranchNodeIds.length > 0 && selectedBranchNodeIds.every((nodeId) => pinnedNodePositions[nodeId]),
+    [pinnedNodePositions, selectedBranchNodeIds]
+  );
+  const whyThisHereSummary = useMemo(() => {
+    if (!selectedNode) return null;
+
+    return {
+      domainLabel: selectedDomainNode?.label ?? (selectedNode.type === "goal" ? "Goals" : selectedNode.type === "area" ? "Areas" : "Ungrouped"),
+      breadcrumb: breadcrumbNodes.map((node) => node.label).join(" -> "),
+      sourceCount: selectedNode.evidenceCount ?? selectedNode.sources?.length ?? 0,
+      upstreamLabels: selectedNodeConnections.upstream.slice(0, 4).map((entry) => entry.node.label),
+      downstreamLabels: selectedNodeConnections.downstream.slice(0, 4).map((entry) => entry.node.label)
+    };
+  }, [breadcrumbNodes, selectedDomainNode, selectedNode, selectedNodeConnections]);
+  const currentBridgeNodeIds = useMemo(
+    () => (selectedNodeIdList.length > 1 ? selectedNodeIdList : [selectedNode?.id, intersectionTargetId].filter(Boolean)),
+    [intersectionTargetId, selectedNode?.id, selectedNodeIdList]
+  );
+  const currentBridgeNodes = useMemo(
+    () => currentBridgeNodeIds.map((nodeId) => graphIndex.nodesById.get(nodeId)).filter(Boolean),
+    [currentBridgeNodeIds, graphIndex]
+  );
+  const canRunBridge = currentBridgeNodes.length >= 2;
+  const isSelectedNodeCollapsed = Boolean(selectedNode && collapsedNodeIds.includes(selectedNode.id));
+  const selectedNodeNote = selectedNode?.note || "";
+  const hasNodeNoteChanges = nodeNoteDraft !== selectedNodeNote;
+  const nodeNoteActionLabel = isNodeNoteEditorOpen
+    ? "Hide Notes"
+    : selectedNode?.hasNote
+      ? "Open Notes"
+      : "Add Note";
 
   const mergeCandidateNodes = useMemo(() => {
     if (!selectedNode) return [];
+    const selectedEntityId = selectedNode.entityId ?? null;
+    const selectedCanonicalLabel = selectedNode.canonicalLabel ?? null;
     return (graphState?.nodes ?? [])
-      .filter((node) => node.id !== selectedNode.id && node.type === selectedNode.type && visibleNodeTypes.includes(node.type))
+      .filter((node) => node.id !== selectedNode.id && visibleNodeTypes.includes(node.type))
+      .filter((node) =>
+        node.type === selectedNode.type
+        || (selectedEntityId && node.entityId === selectedEntityId)
+        || (selectedCanonicalLabel && node.canonicalLabel === selectedCanonicalLabel)
+      )
       .sort((left, right) => left.label.localeCompare(right.label));
-  }, [graphState, selectedNode?.id, selectedNode?.type]);
+  }, [graphState, selectedNode?.canonicalLabel, selectedNode?.entityId, selectedNode?.id, selectedNode?.type]);
+
+  const canEditSelectedNodeRoles = Boolean(
+    selectedNode && SEMANTIC_ROLE_VALUES.includes(selectedNode.primaryRole || selectedNode.type)
+  );
 
   const openTabSessions = useMemo(
     () => sessionTargetState.tabSessions ?? [],
@@ -1554,6 +1989,146 @@ export default function App() {
     }
   };
 
+  const closeNodeNoteEditor = useCallback(() => {
+    setIsNodeNoteEditorOpen(false);
+    setIsNodeNoteFullscreen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isNodeNoteFullscreen) return;
+
+    const handleKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeNodeNoteEditor();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [closeNodeNoteEditor, isNodeNoteFullscreen]);
+
+  const openNodeNoteEditor = useCallback(({ fullscreen = false } = {}) => {
+    if (!selectedNode) return;
+
+    setIsNodeNoteEditorOpen(true);
+    setIsNodeNoteFullscreen(fullscreen);
+    setNodeNoteEditorMode((selectedNode.note || "").trim() ? "preview" : "edit");
+  }, [selectedNode]);
+
+  const handleToggleNodeNoteEditor = useCallback(() => {
+    if (!selectedNode) return;
+    if (isNodeNoteEditorOpen) {
+      closeNodeNoteEditor();
+      return;
+    }
+    openNodeNoteEditor();
+  }, [closeNodeNoteEditor, isNodeNoteEditorOpen, openNodeNoteEditor, selectedNode]);
+
+  const handleOpenNodeNoteFullscreen = useCallback(() => {
+    if (!selectedNode) return;
+    if (isNodeNoteEditorOpen) {
+      setIsNodeNoteFullscreen(true);
+      return;
+    }
+    openNodeNoteEditor({ fullscreen: true });
+  }, [isNodeNoteEditorOpen, openNodeNoteEditor, selectedNode]);
+
+  const handleSaveNodeNote = async () => {
+    if (!sessionId || !selectedNode) return;
+
+    setIsSavingNodeNote(true);
+    setErrorMessage("");
+
+    try {
+      await fetchJson(`${API_BASE}/api/nodes/${encodeURIComponent(selectedNode.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, note: nodeNoteDraft })
+      });
+      setStatusMessage(nodeNoteDraft.trim() ? "Note saved." : "Note cleared.");
+      setNodeNoteEditorMode(nodeNoteDraft.trim() ? "preview" : "edit");
+      await loadGraph();
+    } catch (error) {
+      setErrorMessage(error.message);
+    } finally {
+      setIsSavingNodeNote(false);
+    }
+  };
+
+  const renderNodeNoteEditor = (presentation = "inline") => {
+    const isFullscreenPresentation = presentation === "fullscreen";
+
+    return (
+      <div className={`node-note-editor ${isFullscreenPresentation ? "is-fullscreen" : ""}`.trim()}>
+        <div className="node-note-editor-toolbar">
+          <button
+            className={`small-button ${nodeNoteEditorMode === "edit" ? "is-active" : ""}`.trim()}
+            type="button"
+            onClick={() => setNodeNoteEditorMode("edit")}
+          >
+            Write
+          </button>
+          <button
+            className={`small-button ${nodeNoteEditorMode === "preview" ? "is-active" : ""}`.trim()}
+            type="button"
+            onClick={() => setNodeNoteEditorMode("preview")}
+          >
+            Preview
+          </button>
+          {!isFullscreenPresentation ? (
+            <button className="small-button" type="button" onClick={handleOpenNodeNoteFullscreen}>
+              Fullscreen
+            </button>
+          ) : (
+            <button className="small-button" type="button" onClick={() => setIsNodeNoteFullscreen(false)}>
+              Exit Fullscreen
+            </button>
+          )}
+          <span className="muted-copy">Markdown supported.</span>
+        </div>
+        {nodeNoteEditorMode === "edit" ? (
+          <textarea
+            ref={nodeNoteTextareaRef}
+            className={`text-area node-note-editor-area ${isFullscreenPresentation ? "is-fullscreen" : ""}`.trim()}
+            value={nodeNoteDraft}
+            onChange={(event) => setNodeNoteDraft(event.target.value)}
+            placeholder="Write a markdown note attached to this node in the current map..."
+          />
+        ) : (
+          <MarkdownNotePreview
+            content={nodeNoteDraft}
+            emptyMessage="Nothing to preview yet."
+            className={`node-note-markdown node-note-markdown-editor ${isFullscreenPresentation ? "is-fullscreen" : ""}`.trim()}
+          />
+        )}
+        <div className="queue-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={isSavingNodeNote || !hasNodeNoteChanges}
+            onClick={handleSaveNodeNote}
+          >
+            {isSavingNodeNote ? "Saving..." : "Save Note"}
+          </button>
+          <button
+            className="ghost-button"
+            type="button"
+            disabled={isSavingNodeNote || !hasNodeNoteChanges}
+            onClick={() => {
+              setNodeNoteDraft(selectedNodeNote);
+              setNodeNoteEditorMode(selectedNodeNote.trim() ? "preview" : "edit");
+            }}
+          >
+            Reset
+          </button>
+          <button className="ghost-button" type="button" onClick={isFullscreenPresentation ? closeNodeNoteEditor : handleToggleNodeNoteEditor}>
+            {isFullscreenPresentation ? "Done" : "Close"}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const handleMergeNode = async () => {
     if (!sessionId || !selectedNode || !mergeTargetId) return;
     const confirmed = window.confirm(`Merge "${selectedNode.label}" into the selected target? The source node will be hidden from this session.`);
@@ -1569,7 +2144,7 @@ export default function App() {
         body: JSON.stringify({ sessionId, targetId: mergeTargetId })
       });
       setStatusMessage("Nodes merged.");
-      setSelectedNodeId(mergeTargetId);
+      selectGraphNode(mergeTargetId);
       openRightPanel("inspector");
       await loadGraph();
     } catch (error) {
@@ -1600,7 +2175,7 @@ export default function App() {
     }
   };
 
-  const handleCreateGoalNode = async () => {
+  const handleCreateQuickAddNode = async () => {
     if (!sessionId || !goalNodeDraft.trim()) return;
 
     setIsCreatingGoalNode(true);
@@ -1612,14 +2187,16 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId,
-          type: "goal",
+          type: quickAddNodeType,
           label: goalNodeDraft.trim()
         })
       });
       setGoalNodeDraft("");
-      setSelectedNodeId(result.node?.id ?? null);
+      selectGraphNode(result.node?.id ?? null);
       openRightPanel("inspector");
-      setStatusMessage(result.goalCreated ? "Primary goal node added to this map." : "Top-level goal node added to this map.");
+      setStatusMessage(result.goalCreated
+        ? "Primary goal node added to this map."
+        : `${quickAddNodeType.charAt(0).toUpperCase()}${quickAddNodeType.slice(1)} node added to this map.`);
       await loadHomeData();
       await loadGraph();
     } catch (error) {
@@ -1658,7 +2235,10 @@ export default function App() {
   };
 
   const handleIntersect = async () => {
-    if (!selectedNode || !intersectionTargetId) return;
+    const bridgeNodeIds = selectedNodeIdList.length > 1
+      ? selectedNodeIdList
+      : [selectedNode?.id, intersectionTargetId].filter(Boolean);
+    if (bridgeNodeIds.length < 2) return;
     setIsIntersecting(true);
     setErrorMessage("");
 
@@ -1666,7 +2246,7 @@ export default function App() {
       const result = await fetchJson(`${API_BASE}/api/intersect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(withLlmSelection({ nodeId1: selectedNode.id, nodeId2: intersectionTargetId }))
+        body: JSON.stringify(withLlmSelection({ nodeIds: bridgeNodeIds }))
       });
       setIntersectionResult(result);
     } catch (error) {
@@ -1689,20 +2269,153 @@ export default function App() {
     });
   }, []);
 
-  const openRightPanel = (panel) => {
+  const openRightPanel = useCallback((panel, { reveal = true } = {}) => {
     setRightPanel(panel);
     setRightRailMinimized(false);
-    revealRightPanel();
-  };
+    if (reveal && rightRailMinimized) {
+      revealRightPanel();
+    }
+  }, [revealRightPanel, rightRailMinimized]);
+
+  const handleCenterGraphOnNode = useCallback((nodeId, zoomLevel = 1.38) => {
+    if (!fgRef.current) return;
+    const graphNode = graphData.nodes.find((node) => node.id === nodeId);
+    if (!graphNode || !Number.isFinite(graphNode.x) || !Number.isFinite(graphNode.y)) return;
+
+    fgRef.current.centerAt(graphNode.x, graphNode.y, 320);
+    fgRef.current.zoom(zoomLevel, 320);
+    window.setTimeout(() => {
+      syncGraphViewport();
+    }, 340);
+  }, [graphData.nodes, syncGraphViewport]);
+
+  const handleApplyGraphPreset = useCallback((preset) => {
+    setGraphPreset(preset);
+
+    if (preset === "overview") {
+      setFocusMode("none");
+      setFocusDepth(DEFAULT_TAB_VIEW.focusDepth);
+      setHideUnrelated(false);
+      setNodeTypeFilter("all");
+      setCollapsedNodeIds([]);
+      setPinnedNodePositions({});
+      return;
+    }
+
+    if (preset === "focused") {
+      if (!selectedNodeId) {
+        setStatusMessage("Select a node to open the focused branch view.");
+        return;
+      }
+      setFocusMode("both");
+      setFocusDepth("branch");
+      setHideUnrelated(false);
+      handleCenterGraphOnNode(selectedNodeId, 1.44);
+      return;
+    }
+
+    if (preset === "review") {
+      setFocusMode("none");
+      setHideUnrelated(false);
+      setNodeTypeFilter("concept");
+      if (graphState?.reviewQueue?.[0]?.id) {
+        selectGraphNode(graphState.reviewQueue[0].id);
+        handleCenterGraphOnNode(graphState.reviewQueue[0].id, 1.34);
+      }
+      openRightPanel("review");
+      return;
+    }
+
+    if (preset === "gaps") {
+      setFocusMode("none");
+      setHideUnrelated(false);
+      setNodeTypeFilter("all");
+      if (primaryGoalNode?.id) {
+        selectGraphNode(primaryGoalNode.id);
+        handleCenterGraphOnNode(primaryGoalNode.id, 1.24);
+      }
+      openRightPanel("gaps");
+    }
+  }, [graphState?.reviewQueue, handleCenterGraphOnNode, openRightPanel, primaryGoalNode?.id, selectedNodeId, selectGraphNode]);
+
+  const handleShowSelectedBranch = useCallback(() => {
+    if (!selectedNodeId) return;
+    setFocusMode("both");
+    setFocusDepth("branch");
+    setHideUnrelated(false);
+    setGraphPreset("custom");
+  }, [selectedNodeId]);
+
+  const handleShowImmediateNeighbors = useCallback(() => {
+    if (!selectedNodeId) return;
+    setFocusMode("both");
+    setFocusDepth("neighbors");
+    setHideUnrelated(false);
+    setGraphPreset("custom");
+  }, [selectedNodeId]);
+
+  const handleShowPathToRoot = useCallback(() => {
+    if (!selectedNodeId) return;
+    setFocusMode("upstream");
+    setFocusDepth("branch");
+    setHideUnrelated(false);
+    setGraphPreset("custom");
+  }, [selectedNodeId]);
+
+  const handleToggleHideUnrelated = useCallback(() => {
+    if (!selectedNodeId) return;
+    if (focusMode === "none") {
+      setFocusMode("both");
+      setFocusDepth("branch");
+    }
+    setHideUnrelated((current) => !current);
+    setGraphPreset("custom");
+  }, [focusMode, selectedNodeId]);
+
+  const handleToggleCollapsedBranch = useCallback(() => {
+    if (!selectedNode || !selectedDescendantCount) return;
+    setCollapsedNodeIds((current) => (
+      current.includes(selectedNode.id)
+        ? current.filter((nodeId) => nodeId !== selectedNode.id)
+        : [...current, selectedNode.id]
+    ));
+    setGraphPreset("custom");
+  }, [selectedDescendantCount, selectedNode]);
+
+  const handleTogglePinnedBranch = useCallback(() => {
+    if (!selectedBranchNodeIds.length) return;
+    if (isSelectedBranchPinned) {
+      setPinnedNodePositions((current) => Object.fromEntries(
+        Object.entries(current).filter(([nodeId]) => !selectedBranchNodeIds.includes(nodeId))
+      ));
+      setGraphPreset("custom");
+      return;
+    }
+
+    const nextPinnedPositions = Object.fromEntries(
+      graphData.nodes
+        .filter((node) => selectedBranchNodeIds.includes(node.id) && Number.isFinite(node.x) && Number.isFinite(node.y))
+        .map((node) => [node.id, { x: node.x, y: node.y }])
+    );
+    setPinnedNodePositions((current) => ({
+      ...current,
+      ...nextPinnedPositions
+    }));
+    setGraphPreset("custom");
+  }, [graphData.nodes, isSelectedBranchPinned, selectedBranchNodeIds]);
 
   const handleFocusGraph = () => {
     setLeftRailMinimized(true);
     setRightRailMinimized(true);
+    if (selectedNodeId) {
+      handleCenterGraphOnNode(selectedNodeId, 1.32);
+    }
   };
 
   const handleRecommendation = (recommendation) => {
     if (recommendation.nodeId) {
-      setSelectedNodeId(recommendation.nodeId);
+      selectGraphNode(recommendation.nodeId);
+      handleCenterGraphOnNode(recommendation.nodeId, 1.36);
       openRightPanel("inspector");
       return;
     }
@@ -1710,65 +2423,265 @@ export default function App() {
     openRightPanel("import");
   };
 
-  const handleNodeRender = (node, ctx) => {
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (!selectedNodeId || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+
+      const target = event.target;
+      const tagName = target?.tagName?.toLowerCase?.();
+      if (target?.isContentEditable || tagName === "input" || tagName === "textarea" || tagName === "select" || tagName === "button") {
+        return;
+      }
+
+      if (event.key === "Escape") {
+        if (selectedNodeIdList.length > 1 || focusMode !== "none" || hideUnrelated) {
+          event.preventDefault();
+          setFocusMode("none");
+          setHideUnrelated(false);
+          setGraphPreset("custom");
+          selectGraphNode(selectedNodeId);
+        }
+        return;
+      }
+
+      if (event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        handleShowSelectedBranch();
+        return;
+      }
+
+      const direction = event.key === "ArrowLeft" || event.key === "ArrowUp"
+        ? "upstream"
+        : event.key === "ArrowRight" || event.key === "ArrowDown"
+          ? "downstream"
+          : null;
+      if (!direction) return;
+
+      const nextNode = getSortedConnectedNodes(graphIndex, selectedNodeId, { direction })[0] ?? null;
+      if (!nextNode) return;
+
+      event.preventDefault();
+      selectGraphNode(nextNode.id);
+      handleCenterGraphOnNode(nextNode.id, 1.34);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    graphIndex,
+    focusMode,
+    handleCenterGraphOnNode,
+    handleShowSelectedBranch,
+    hideUnrelated,
+    openRightPanel,
+    selectGraphNode,
+    selectedNodeId,
+    selectedNodeIdList.length
+  ]);
+
+  const handleGraphFramePre = useCallback((ctx, globalScale) => {
+    if (!isGraphViewportReady || !graphData.domainGroups.length) return;
+
+    ctx.save();
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+
+    for (const group of graphData.domainGroups) {
+      const positionedNodes = group.nodes.filter((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
+      if (positionedNodes.length < 2) continue;
+      const isHighlighted = group.nodes.some((node) => highlightedNodeIds.has(node.id));
+      const containsDimmedNodes = focusIsActive && !hideUnrelated
+        ? group.nodes.some((node) => !highlightedNodeIds.has(node.id))
+        : false;
+
+      let left = Number.POSITIVE_INFINITY;
+      let top = Number.POSITIVE_INFINITY;
+      let right = Number.NEGATIVE_INFINITY;
+      let bottom = Number.NEGATIVE_INFINITY;
+
+      for (const node of positionedNodes) {
+        const metrics = getNodeMetrics(node, ctx);
+        left = Math.min(left, metrics.x - 26);
+        top = Math.min(top, metrics.y - 24);
+        right = Math.max(right, metrics.x + metrics.width + 26);
+        bottom = Math.max(bottom, metrics.y + metrics.height + 24);
+      }
+
+      const labelHeight = Math.max(16, 16 / Math.max(globalScale, 0.72));
+      ctx.fillStyle = withAlpha(group.fill, containsDimmedNodes ? 0.04 : 0.08);
+      ctx.strokeStyle = withAlpha(group.stroke, isHighlighted ? 0.42 : 0.18);
+      ctx.lineWidth = (isHighlighted ? 2.1 : 1.15) / Math.max(globalScale, 0.7);
+      drawRoundedRect(ctx, left, top, right - left, bottom - top, 20);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = withAlpha(group.stroke, isHighlighted ? 0.96 : 0.74);
+      ctx.font = `700 ${labelHeight}px "Aptos", "Segoe UI", sans-serif`;
+      ctx.fillText(group.label, left + 16, top + 16);
+    }
+
+    ctx.restore();
+  }, [focusIsActive, graphData.domainGroups, hideUnrelated, highlightedNodeIds, isGraphViewportReady]);
+
+  const handleNodeRender = useCallback((node, ctx, globalScale) => {
     const isSelected = node.id === selectedNodeId;
+    const isGroupSelected = selectedNodeIdSet.has(node.id) && !isSelected;
+    const isFocused = focusTraversal.nodeIds.has(node.id);
+    const isPath = pathNodeIds.has(node.id);
+    const isReviewNode = reviewNodeIds.has(node.id);
+    const isDimmed = focusIsActive && !hideUnrelated ? !highlightedNodeIds.has(node.id) : false;
+    const isEmphasized = isSelected || isGroupSelected || isFocused || isPath;
     const metrics = getNodeMetrics(node, ctx);
+    const detail = getNodeRenderDetail(globalScale);
 
     ctx.save();
     drawRoundedRect(ctx, metrics.x, metrics.y, metrics.width, metrics.height, 8);
-    ctx.fillStyle = metrics.fill;
-    ctx.shadowColor = isSelected ? metrics.shadowColor : "transparent";
-    ctx.shadowBlur = isSelected ? 18 : 0;
+    ctx.fillStyle = isDimmed ? withAlpha(metrics.fill, 0.24) : withAlpha(metrics.fill, isEmphasized ? 0.98 : 1);
+    ctx.shadowColor = isSelected
+      ? metrics.shadowColor
+      : isEmphasized
+        ? withAlpha(metrics.shadowColor, 0.72)
+        : "transparent";
+    ctx.shadowBlur = isSelected ? 20 : isEmphasized ? 12 : 0;
     ctx.fill();
-    ctx.lineWidth = isSelected ? 3 : 1.6;
-    ctx.strokeStyle = isSelected ? metrics.selectedStroke : metrics.stroke;
+    ctx.lineWidth = isSelected ? 3.2 : isGroupSelected || isPath ? 2.5 : isReviewNode ? 2.1 : 1.6;
+    ctx.strokeStyle = isSelected
+      ? metrics.selectedStroke
+      : isGroupSelected || isPath
+        ? withAlpha(metrics.selectedStroke, 0.88)
+        : isFocused
+          ? withAlpha(metrics.stroke, 0.92)
+          : isDimmed
+            ? withAlpha(metrics.stroke, 0.24)
+            : metrics.stroke;
     ctx.stroke();
     ctx.shadowBlur = 0;
 
-    ctx.fillStyle = metrics.textFill;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.font = `700 ${metrics.fontSize}px Segoe UI`;
-    metrics.lines.forEach((line, index) => {
-      ctx.fillText(line, node.x, metrics.textY + index * metrics.lineHeight);
-    });
-    ctx.restore();
-  };
+    if (isReviewNode && !isSelected) {
+      ctx.fillStyle = withAlpha("#ffffff", isDimmed ? 0.2 : 0.54);
+      drawRoundedRect(ctx, metrics.x + 10, metrics.y + 8, 18, 6, 3);
+      ctx.fill();
+    }
 
-  const handlePointerPaint = (node, color, ctx) => {
+    if (detail !== "minimal") {
+      const lines = detail === "compact" ? [metrics.compactLine] : metrics.lines;
+      const textY = detail === "compact" ? node.y : metrics.textY;
+      ctx.fillStyle = isDimmed ? withAlpha(metrics.textFill, 0.42) : metrics.textFill;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = getNodeFont(metrics);
+      lines.forEach((line, index) => {
+        ctx.fillText(line, node.x, textY + index * metrics.lineHeight);
+      });
+    }
+
+    if (node.collapsedDescendantCount > 0) {
+      const badgeLabel = `${node.collapsedDescendantCount}`;
+      ctx.font = `700 ${Math.max(9, metrics.fontSize - 1.4)}px "Aptos", "Segoe UI", sans-serif`;
+      const badgeWidth = ctx.measureText(badgeLabel).width + 14;
+      const badgeHeight = 18;
+      const badgeX = metrics.x + metrics.width - badgeWidth - 10;
+      const badgeY = metrics.y + 8;
+      ctx.fillStyle = withAlpha("#050505", 0.82);
+      ctx.strokeStyle = withAlpha(metrics.selectedStroke, 0.78);
+      ctx.lineWidth = 1.2;
+      drawRoundedRect(ctx, badgeX, badgeY, badgeWidth, badgeHeight, 8);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#f4f4f4";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(badgeLabel, badgeX + badgeWidth / 2, badgeY + badgeHeight / 2 + 0.5);
+    }
+
+    ctx.restore();
+  }, [focusIsActive, focusTraversal, hideUnrelated, highlightedNodeIds, pathNodeIds, reviewNodeIds, selectedNodeId, selectedNodeIdSet]);
+
+  const handlePointerPaint = useCallback((node, color, ctx) => {
     const metrics = getNodeMetrics(node, ctx);
     ctx.fillStyle = color;
     drawRoundedRect(ctx, metrics.x - 4, metrics.y - 4, metrics.width + 8, metrics.height + 8, 10);
     ctx.fill();
-  };
+  }, []);
 
-  const handleLinkRender = (link, ctx) => {
+  const handleLinkRender = useCallback((link, ctx, globalScale) => {
     const style = getLinkVisualStyle(link);
+    const sourceNode = typeof link.source === "object" ? link.source : null;
+    const targetNode = typeof link.target === "object" ? link.target : null;
+    if (!sourceNode || !targetNode) return;
+
+    const sourceMetrics = getNodeMetrics(sourceNode, ctx);
+    const targetMetrics = getNodeMetrics(targetNode, ctx);
+    const angle = Math.atan2(targetNode.y - sourceNode.y, targetNode.x - sourceNode.x);
+    const sourceInset = Math.max(sourceMetrics.width, sourceMetrics.height) * 0.34;
+    const targetInset = Math.max(targetMetrics.width, targetMetrics.height) * 0.38;
+    const startX = sourceNode.x + Math.cos(angle) * sourceInset;
+    const startY = sourceNode.y + Math.sin(angle) * sourceInset;
+    const endX = targetNode.x - Math.cos(angle) * targetInset;
+    const endY = targetNode.y - Math.sin(angle) * targetInset;
+    const isPath = highlightedEdgeKeys.has(link.key) && pathEdgeKeys.has(link.key);
+    const isFocused = highlightedEdgeKeys.has(link.key) && focusTraversal.edgeKeys.has(link.key);
+    const hasSelectedEndpoint = selectedNodeIdSet.has(link.sourceId) || selectedNodeIdSet.has(link.targetId);
+    const isDimmed = focusIsActive && !hideUnrelated
+      ? !(highlightedEdgeKeys.has(link.key) || hasSelectedEndpoint)
+      : false;
+    const alpha = isDimmed
+      ? 0.08
+      : isPath
+        ? 0.92
+        : isFocused
+          ? 0.76
+          : hasSelectedEndpoint
+            ? 0.58
+            : 0.28;
+    const lineWidth = isPath
+      ? style.lineWidth + 1.35
+      : isFocused || hasSelectedEndpoint
+        ? style.lineWidth + 0.55
+        : style.lineWidth;
+
     ctx.save();
-    ctx.strokeStyle = style.stroke;
-    ctx.lineWidth = style.lineWidth;
+    ctx.strokeStyle = withAlpha(style.stroke, alpha);
+    ctx.fillStyle = withAlpha(style.stroke, Math.min(1, alpha + 0.12));
+    ctx.lineWidth = lineWidth;
     if (style.dash.length) ctx.setLineDash(style.dash);
     ctx.beginPath();
-    ctx.moveTo(link.source.x, link.source.y);
-    ctx.lineTo(link.target.x, link.target.y);
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
     ctx.stroke();
     ctx.setLineDash([]);
+    drawArrowHead(ctx, startX, startY, endX, endY, {
+      length: isPath ? 12 : 9,
+      width: isPath ? 8 : 6,
+      inset: 0
+    });
+
+    if (isPath || isFocused || hasSelectedEndpoint) {
+      const label = String(link.label || link.type || "").trim();
+      if (label) {
+        const midX = (startX + endX) / 2;
+        const midY = (startY + endY) / 2;
+        const fontSize = Math.max(9, 10 / Math.max(globalScale, 0.84));
+        ctx.font = `700 ${fontSize}px "Aptos", "Segoe UI", sans-serif`;
+        const textWidth = ctx.measureText(label).width;
+        ctx.fillStyle = withAlpha("#060a12", 0.82);
+        ctx.strokeStyle = withAlpha("#ffffff", 0.18);
+        ctx.lineWidth = 1;
+        drawRoundedRect(ctx, midX - textWidth / 2 - 8, midY - 9, textWidth + 16, 18, 8);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#f4f4f4";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, midX, midY + 0.5);
+      }
+    }
+
     ctx.restore();
-  };
+  }, [focusIsActive, focusTraversal, hideUnrelated, highlightedEdgeKeys, pathEdgeKeys, selectedNodeIdSet]);
 
   const mapTabsChrome = (
-    <section className="map-tabs-shell panel">
-      <div className="map-tabs-header">
-        <div>
-          <p className="panel-title">Map Tabs</p>
-          <h2>{activeWorkspaceName}</h2>
-        </div>
-        <div className="map-tabs-meta">
-          <span>{sessionTargetState.activeSession ? `Extension target: ${getMapName(sessionTargetState.activeSession)}` : "Extension target is idle"}</span>
-          <span>{openTabSessions.length} open tab{openTabSessions.length === 1 ? "" : "s"}</span>
-        </div>
-      </div>
-
+    <section className={`map-tabs-shell panel ${mapTabsCollapsed ? "is-collapsed" : ""}`}>
       <div className="map-tabs-row">
         <button
           type="button"
@@ -1778,7 +2691,7 @@ export default function App() {
           All Maps
         </button>
 
-        {openTabSessions.map((session) => (
+        {!mapTabsCollapsed && openTabSessions.map((session) => (
           <div key={session.id} className={`map-tab ${sessionId === session.id ? "is-active" : ""}`}>
             <button type="button" className="map-tab-main" onClick={() => openSessionTab(session.id)}>
               <strong>{getMapName(session)}</strong>
@@ -1797,30 +2710,206 @@ export default function App() {
           </div>
         ))}
 
-        <form className="map-tab-create-form" onSubmit={(event) => handleCreateSession(event, { fromTabs: true })}>
+        {!mapTabsCollapsed && (
+          <form className="map-tab-create-form" onSubmit={(event) => handleCreateSession(event, { fromTabs: true })}>
+            <input
+              className="text-input map-tab-input"
+              placeholder="Map name"
+              value={tabComposerGoal}
+              onChange={(event) => setTabComposerGoal(event.target.value)}
+            />
+            <button className="secondary-button" type="submit" disabled={isCreatingSession}>
+              {isCreatingSession ? "Creating..." : "New Map"}
+            </button>
+          </form>
+        )}
+
+        {!mapTabsCollapsed && sessionTargetState.activeSession ? (
+          <span className="map-tabs-target-pill">
+            {`⬤ ${getMapName(sessionTargetState.activeSession)}`}
+          </span>
+        ) : null}
+
+        <button
+          className="map-tabs-toggle"
+          type="button"
+          onClick={() => setMapTabsCollapsed((c) => !c)}
+          aria-label={mapTabsCollapsed ? "Expand map tabs" : "Collapse map tabs"}
+          title={mapTabsCollapsed ? "Expand map tabs" : "Collapse map tabs"}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            {mapTabsCollapsed
+              ? <polyline points="6 9 12 15 18 9"/>
+              : <polyline points="18 15 12 9 6 15"/>}
+          </svg>
+        </button>
+      </div>
+
+      {!mapTabsCollapsed && reopenableSessions.length ? (
+        <div className="map-reopen-row">
+          <span>Reopen recent</span>
+          {reopenableSessions.map((session) => (
+            <button key={session.id} type="button" className="map-reopen-chip" onClick={() => openSessionTab(session.id)}>
+              {getMapName(session)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+
+  const unifiedTopbar = (
+    <header className="workspace-topbar">
+      {/* ── Column 1: Maps (tabs + new map) ── */}
+      <div className="topbar-maps-group">
+        <button
+          type="button"
+          className="topbar-home"
+          onClick={() => navigateToSession(null)}
+          aria-label="All maps"
+          title="All maps"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
+          </svg>
+        </button>
+        {openTabSessions.map((session) => (
+          <div key={session.id} className={`topbar-tab ${sessionId === session.id ? "is-active" : ""}`}>
+            <button type="button" className="topbar-tab-main" onClick={() => openSessionTab(session.id)}>
+              {getMapName(session)}
+            </button>
+            <button
+              type="button"
+              className="topbar-tab-close"
+              onClick={() => closeSessionTab(session.id)}
+              aria-label={`Close ${getMapName(session)}`}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <form className="topbar-new-map" onSubmit={(event) => handleCreateSession(event, { fromTabs: true })}>
           <input
-            className="text-input map-tab-input"
-                    placeholder="Map name"
+            className="topbar-new-input"
+            placeholder="New map…"
             value={tabComposerGoal}
             onChange={(event) => setTabComposerGoal(event.target.value)}
           />
-          <button className="secondary-button" type="submit" disabled={isCreatingSession}>
-            {isCreatingSession ? "Creating..." : "New Map"}
+          <button className="topbar-new-btn" type="submit" disabled={isCreatingSession} aria-label="Create new map" title="Create new map">
+            +
           </button>
         </form>
       </div>
 
-        {reopenableSessions.length ? (
-          <div className="map-reopen-row">
-            <span>Reopen recent</span>
-            {reopenableSessions.map((session) => (
-              <button key={session.id} type="button" className="map-reopen-chip" onClick={() => openSessionTab(session.id)}>
-                {getMapName(session)}
+      {/* ── Column 2: Tools (search | views | direction filters) ── */}
+      {sessionId && (
+        <div className="topbar-tools-group">
+          <div className="topbar-section topbar-search-section">
+            <input
+              className="topbar-search-input"
+              placeholder="Search nodes…"
+              value={nodeSearch}
+              onChange={(event) => setNodeSearch(event.target.value)}
+            />
+            <button className="topbar-btn" type="button" onClick={handleGraphSearch} disabled={isSearchingGraph || !nodeSearch.trim()}>
+              {isSearchingGraph ? "…" : "Find"}
+            </button>
+            <button className="topbar-btn topbar-fit-btn" type="button" onClick={handleFocusGraph} title="Fit graph to viewport" aria-label="Fit graph to viewport">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+              </svg>
+            </button>
+          </div>
+          <div className="topbar-divider" />
+          <div className="topbar-section topbar-filter-section">
+            <SelectControl
+              className="topbar-type-filter"
+              value={nodeTypeFilter}
+              onChange={setNodeTypeFilter}
+              options={NODE_TYPE_OPTIONS}
+              ariaLabel="Filter node type"
+            />
+            <SelectControl
+              className="topbar-type-filter"
+              value={graphColorMode}
+              onChange={(value) => setGraphColorMode(value)}
+              options={GRAPH_COLOR_MODE_OPTIONS}
+              ariaLabel="Graph color mode"
+            />
+          </div>
+          <div className="topbar-divider" />
+          <div className="topbar-section topbar-views-section">
+            {GRAPH_VIEW_PRESET_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={`topbar-view-chip ${graphPreset === option.value ? "is-active" : ""}`}
+                onClick={() => handleApplyGraphPreset(option.value)}
+              >
+                {option.label}
               </button>
             ))}
           </div>
-      ) : null}
-    </section>
+          <div className="topbar-divider" />
+          <div className="topbar-section topbar-focus-section">
+            <span className="topbar-focus-label">Focus</span>
+            <div className="topbar-direction-toggle">
+              {[
+                { value: "upstream", label: "↑ Up", title: "Show upstream ancestors" },
+                { value: "both", label: "↕ Both", title: "Show upstream and downstream" },
+                { value: "downstream", label: "↓ Down", title: "Show downstream descendants" },
+              ].map(({ value, label, title }) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`topbar-dir-btn${focusMode === value ? " is-active" : ""}`}
+                  title={title}
+                  onClick={() => {
+                    const next = focusMode === value ? "none" : value;
+                    setFocusMode(next);
+                    if (next === "none") setHideUnrelated(false);
+                    setGraphPreset("custom");
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {focusMode !== "none" && (
+              <SelectControl
+                className="topbar-focus-depth"
+                value={focusDepth}
+                onChange={(value) => {
+                  setFocusDepth(value);
+                  setGraphPreset("custom");
+                }}
+                options={GRAPH_FOCUS_DEPTH_OPTIONS}
+                ariaLabel="Focus depth"
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Column 3: Status ── */}
+      <div className="topbar-end">
+        {sessionId && (
+          <span className="topbar-status-pill">
+            {isLoadingGraph ? "Loading…" : `${graphData.nodes.length} nodes`}
+            <span className="topbar-dot">·</span>
+            {graphState?.session?.endedAt ? "ended" : "live"}
+            <span className="topbar-dot">·</span>
+            {graphState?.artifacts?.length ?? 0} src
+          </span>
+        )}
+        {sessionTargetState.activeSession && (
+          <span className="topbar-target-pill">
+            <span className="topbar-target-dot" />
+            {getMapName(sessionTargetState.activeSession)}
+          </span>
+        )}
+      </div>
+    </header>
   );
 
   if (!sessionId) {
@@ -1943,21 +3032,14 @@ export default function App() {
 
   return (
     <div className="page-shell is-workspace">
-      {mapTabsChrome}
+      {unifiedTopbar}
       <div className={appShellClassName}>
         <aside className={`left-rail ${leftRailMinimized ? "is-minimized" : ""}`} aria-label="Map navigation">
-          {leftRailMinimized ? (
-            <button className="rail-tab rail-tab-left" type="button" onClick={() => setLeftRailMinimized(false)} aria-label="Expand workspaces">
-              <span className="rail-tab-label">Workspaces</span>
-              <span className="rail-tab-mark" aria-hidden="true" />
-            </button>
-          ) : (
-            <>
           <section className="panel workspace-nav">
             <div className="panel-heading-row">
               <p className="panel-title">Workspaces</p>
-              <button className="rail-toggle-button" type="button" onClick={() => setLeftRailMinimized(true)} aria-label="Collapse workspaces">
-                Collapse
+              <button className="rail-toggle-button" type="button" onClick={() => setLeftRailMinimized(true)} aria-label="Close workspaces">
+                ✕
               </button>
             </div>
             <div className="workspace-list">
@@ -2009,10 +3091,13 @@ export default function App() {
             onSaveMapName={handleRenameMap}
             isRenamingMap={isRenamingMap}
             hasMapNameChanges={hasMapNameChanges}
-            goalNodeDraft={goalNodeDraft}
-            onGoalNodeDraftChange={setGoalNodeDraft}
-            onCreateGoalNode={handleCreateGoalNode}
-            isCreatingGoalNode={isCreatingGoalNode}
+            quickAddNodeType={quickAddNodeType}
+            onQuickAddNodeTypeChange={setQuickAddNodeType}
+            quickAddNodeLabel={goalNodeDraft}
+            onQuickAddNodeLabelChange={setGoalNodeDraft}
+            onCreateNode={handleCreateQuickAddNode}
+            isCreatingNode={isCreatingGoalNode}
+            quickAddNodeTypeOptions={NODE_TYPE_OPTIONS.filter((option) => option.value !== "all")}
             primaryGoalNode={primaryGoalNode}
             isRefiningMap={isRefiningMap}
             onRefineMap={handleRefineMap}
@@ -2093,46 +3178,86 @@ export default function App() {
               ))}
             </div>
           </section>
-
-            </>
-          )}
         </aside>
 
         <main className="graph-card">
-          <div className="graph-toolbar">
-            <div>
-              <h2>Knowledge Graph</h2>
-              <p>{isLoadingGraph ? "Refreshing graph..." : `${graphData.nodes.length} visible nodes`}</p>
+          {(!leftRailMinimized || !rightRailMinimized) && (
+            <div className="drawer-backdrop" onClick={() => { setLeftRailMinimized(true); setRightRailMinimized(true); }} />
+          )}
+          {leftRailMinimized && (
+            <button className="drawer-open-left" type="button" onClick={() => setLeftRailMinimized(false)} aria-label="Open workspaces panel">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          )}
+          {rightRailMinimized && (
+            <button className="drawer-open-right" type="button" onClick={() => setRightRailMinimized(false)} aria-label={`Open ${rightPanelLabel}`}>
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
+          )}
+          {(breadcrumbNodes.length > 1 || selectedNode || selectedGroupNodes.length > 1) && (
+            <div className="graph-context-strip">
+              {breadcrumbNodes.length > 1 && (
+                <div className="graph-breadcrumbs">
+                  {breadcrumbNodes.map((node, index) => (
+                    <button
+                      key={node.id}
+                      type="button"
+                      className={`graph-breadcrumb ${node.id === selectedNodeId ? "is-active" : ""}`}
+                      onClick={() => {
+                        selectGraphNode(node.id);
+                        handleCenterGraphOnNode(node.id, 1.32);
+                      }}
+                    >
+                      {index > 0 ? <span aria-hidden="true">/</span> : null}
+                      {node.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {selectedGroupNodes.length > 1 ? (
+                <div className="context-group">
+                  <div className="graph-selection-pill-row">
+                    {selectedGroupNodes.map((node) => (
+                      <button
+                        key={node.id}
+                        type="button"
+                        className={`graph-selection-pill ${node.id === selectedNodeId ? "is-primary" : ""}`}
+                        onClick={() => {
+                          selectGraphNode(node.id);
+                          handleCenterGraphOnNode(node.id, 1.32);
+                          openRightPanel("inspector");
+                        }}
+                      >
+                        {node.label}
+                      </button>
+                    ))}
+                  </div>
+                  <button className="small-button" type="button" disabled={!canRunBridge || isIntersecting} onClick={() => { openRightPanel("inspector"); void handleIntersect(); }}>
+                    {isIntersecting ? "Explaining..." : "Explain Bridge"}
+                  </button>
+                  <button className="small-button" type="button" onClick={clearGraphSelection}>
+                    Clear
+                  </button>
+                </div>
+              ) : selectedNode ? (
+                <div className="context-group">
+                  <span className="context-node-label">{selectedNode.label}</span>
+                  <button className="small-button" type="button" onClick={handleShowSelectedBranch}>Focus Branch</button>
+                  <button className="small-button" type="button" onClick={handleShowImmediateNeighbors}>Neighbors</button>
+                  <button className="small-button" type="button" onClick={handleShowPathToRoot}>Path to Root</button>
+                  <button className="small-button" type="button" disabled={!selectedDescendantCount} onClick={handleToggleCollapsedBranch}>
+                    {isSelectedNodeCollapsed ? `Expand (${selectedDescendantCount})` : `Collapse (${selectedDescendantCount})`}
+                  </button>
+                  <button className="small-button" type="button" disabled={!selectedBranchNodeIds.length} onClick={handleTogglePinnedBranch}>
+                    {isSelectedBranchPinned ? "Unpin Branch" : "Pin Branch"}
+                  </button>
+                  <button className="small-button" type="button" onClick={handleToggleHideUnrelated}>
+                    {hideUnrelated ? "Show All" : "Hide Unrelated"}
+                  </button>
+                </div>
+              ) : null}
             </div>
-            <div className="graph-controls">
-              <input
-                className="text-input graph-search"
-                placeholder="Search nodes..."
-                value={nodeSearch}
-                onChange={(event) => setNodeSearch(event.target.value)}
-              />
-              <SelectControl
-                className="graph-filter"
-                value={nodeTypeFilter}
-                onChange={setNodeTypeFilter}
-                options={NODE_TYPE_OPTIONS}
-                ariaLabel="Filter node type"
-              />
-              <button className="small-button" onClick={handleGraphSearch} disabled={isSearchingGraph || !nodeSearch.trim()}>
-                {isSearchingGraph ? "Searching..." : "Find Evidence"}
-              </button>
-              <button className="small-button" type="button" onClick={handleFocusGraph}>
-                Focus Graph
-              </button>
-            </div>
-            <div className="status-pill">
-              <span>{graphState?.session?.endedAt ? "Ended" : "Live map"}</span>
-              <span>•</span>
-              <span>{graphState?.artifacts?.length ?? 0} sources</span>
-              <span>•</span>
-              <span>Manual refresh</span>
-            </div>
-          </div>
+          )}
           {searchResults.length ? (
             <div className="search-results-strip">
               {searchResults.slice(0, 6).map((result) => (
@@ -2141,8 +3266,8 @@ export default function App() {
                   className="search-chip"
                   onClick={() => {
                     if (result.kind !== "node") return;
-                    setSelectedNodeId(result.id);
-                    openRightPanel("inspector");
+                    selectGraphNode(result.id);
+                    handleCenterGraphOnNode(result.id, 1.34);
                   }}
                 >
                   <strong>{result.label}</strong>
@@ -2173,6 +3298,32 @@ export default function App() {
                     {item.label}
                   </span>
                 ))}
+                {graphColorMode !== "type" ? (
+                  <span className="graph-legend-item">
+                    <span
+                      className="graph-legend-swatch"
+                      aria-hidden="true"
+                      style={{ background: getBranchVisualStyle(null).fill, borderColor: getBranchVisualStyle(null).stroke }}
+                    />
+                    {`Fallback (${graphColorMode})`}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {graphData.nodes.length && isGraphViewportReady ? (
+              <div className="graph-minimap-shell">
+                <GraphMiniMap
+                  nodes={graphData.nodes}
+                  links={graphData.links}
+                  graphSize={graphSize}
+                  viewport={graphViewport}
+                  selectedNodeId={selectedNodeId}
+                  selectedNodeIds={selectedNodeIdList}
+                  onSelectNode={(nodeId, options) => {
+                    selectGraphNode(nodeId, options);
+                  }}
+                  onCenterNode={handleCenterGraphOnNode}
+                />
               </div>
             ) : null}
             {graphData.nodes.length > 0 && !isGraphViewportReady ? (
@@ -2200,38 +3351,45 @@ export default function App() {
               minZoom={0.08}
               maxZoom={6}
               backgroundColor="rgba(0,0,0,0)"
+              onRenderFramePre={handleGraphFramePre}
               nodeCanvasObject={handleNodeRender}
               nodePointerAreaPaint={handlePointerPaint}
               linkCanvasObject={handleLinkRender}
               linkWidth={() => 1}
               linkColor={() => "rgba(255,255,255,0.18)"}
-              onNodeClick={(node) => {
-                setSelectedNodeId(node.id);
-                openRightPanel("inspector");
+              onNodeClick={(node, event) => {
+                selectGraphNode(node.id, { additive: Boolean(event?.shiftKey) });
+                if (rightRailMinimized || rightPanel !== "inspector") {
+                  openRightPanel("inspector", { reveal: false });
+                }
               }}
+              onBackgroundClick={() => clearGraphSelection()}
+              onZoomEnd={syncGraphViewport}
               nodeRelSize={4}
               warmupTicks={140}
               cooldownTicks={110}
               d3VelocityDecay={0.22}
               onEngineStop={handleGraphEngineStop}
+              onNodeDragEnd={(node) => {
+                if (!pinnedNodePositions[node.id]) return;
+                setPinnedNodePositions((current) => ({
+                  ...current,
+                  [node.id]: { x: node.x, y: node.y }
+                }));
+                syncGraphViewport();
+              }}
             />
           </div>
         </main>
 
         <aside ref={rightRailRef} className={`right-rail ${rightRailMinimized ? "is-minimized" : ""}`} aria-label="Workspace details">
-          {rightRailMinimized ? (
-            <button className="rail-tab rail-tab-right" type="button" onClick={() => setRightRailMinimized(false)} aria-label={`Expand ${rightPanelLabel}`}>
-              <span className="rail-tab-label">{rightPanelLabel}</span>
-              <span className="rail-tab-mark" aria-hidden="true" />
-            </button>
-          ) : (
-            <section className="panel scroll-panel workspace-panel">
-              <div className="workspace-panel-chrome">
-                <span>{rightPanelLabel}</span>
-                <button className="rail-toggle-button" type="button" onClick={() => setRightRailMinimized(true)} aria-label="Collapse right panel">
-                  Collapse
-                </button>
-              </div>
+          <section className="panel scroll-panel workspace-panel">
+            <div className="workspace-panel-chrome">
+              <span>{rightPanelLabel}</span>
+              <button className="rail-toggle-button" type="button" onClick={() => setRightRailMinimized(true)} aria-label="Close right panel">
+                ✕
+              </button>
+            </div>
             {rightPanel === "plan" ? (
               <>
                 <div className="workspace-panel-header">
@@ -2365,7 +3523,7 @@ export default function App() {
                         Confidence {Math.round((node.confidence ?? 0) * 100)}% • Evidence {node.evidenceCount} • {describeReviewDate(node.nextReviewAt)}
                       </div>
                       <div className="queue-actions">
-                        <button className="small-button" onClick={() => { setSelectedNodeId(node.id); openRightPanel("inspector"); }}>Inspect</button>
+                        <button className="small-button" onClick={() => { selectGraphNode(node.id); handleCenterGraphOnNode(node.id, 1.34); openRightPanel("inspector"); }}>Inspect</button>
                         <button className="small-button is-approve" disabled={isReviewing} onClick={() => handleReview(node.id, "approve")}>Approve</button>
                         <button className="small-button is-reject" disabled={isReviewing} onClick={() => handleReview(node.id, "reject")}>Reject</button>
                       </div>
@@ -2615,6 +3773,11 @@ export default function App() {
                   <p className="panel-subtitle">
                     {selectedNode.description || selectedNode.whyThisExists || "This node came from your session and can be manually reviewed from here."}
                   </p>
+                  {selectedNode.secondaryRoles?.length ? (
+                    <div className="semantic-role-summary">
+                      Also acts as {selectedNode.secondaryRoles.join(", ")}.
+                    </div>
+                  ) : null}
                 </div>
                 <div className="confidence-row">
                   <span className="muted-copy">Confidence</span>
@@ -2637,6 +3800,18 @@ export default function App() {
                     <span>{selectedNode.masteryState || "new"}</span>
                   </div>
                   <div>
+                    <strong>Primary Role</strong>
+                    <span>{selectedNode.primaryRole || selectedNode.type}</span>
+                  </div>
+                  <div>
+                    <strong>Also Acts As</strong>
+                    <span>{selectedNode.secondaryRoles?.length ? selectedNode.secondaryRoles.join(", ") : "None yet"}</span>
+                  </div>
+                  <div>
+                    <strong>Identity</strong>
+                    <span>{selectedNode.entityId?.replace(/^entity:/, "") || selectedNode.canonicalLabel || "Not set"}</span>
+                  </div>
+                  <div>
                     <strong>Incoming</strong>
                     <span>{selectedNodeConnections.upstream.length}</span>
                   </div>
@@ -2646,8 +3821,82 @@ export default function App() {
                   </div>
                 </div>
                 <div className="summary-card">
+                  <h3>Path & Workflow</h3>
+                  <div className="queue-meta">
+                    {whyThisHereSummary?.breadcrumb
+                      ? `Breadcrumb: ${whyThisHereSummary.breadcrumb}`
+                      : "This node is currently the top of its visible branch."}
+                  </div>
+                  <div className="metadata-grid compact-metadata-grid">
+                    <div>
+                      <strong>Domain Group</strong>
+                      <span>{whyThisHereSummary?.domainLabel ?? "Ungrouped"}</span>
+                    </div>
+                    <div>
+                      <strong>Upstream Context</strong>
+                      <span>{whyThisHereSummary?.upstreamLabels?.length ? whyThisHereSummary.upstreamLabels.join(", ") : "No visible parents"}</span>
+                    </div>
+                    <div>
+                      <strong>Downstream Context</strong>
+                      <span>{whyThisHereSummary?.downstreamLabels?.length ? whyThisHereSummary.downstreamLabels.join(", ") : "No visible children"}</span>
+                    </div>
+                    <div>
+                      <strong>Keyboard</strong>
+                      <span>Arrow keys move through connected nodes. Press F to focus the selected branch.</span>
+                    </div>
+                  </div>
+                  <div className="queue-actions">
+                    <button className="small-button" type="button" onClick={handleShowSelectedBranch}>Focus Branch</button>
+                    <button className="small-button" type="button" onClick={handleShowImmediateNeighbors}>Show Neighbors</button>
+                    <button className="small-button" type="button" onClick={handleShowPathToRoot}>Path To Root</button>
+                    <button className="small-button" type="button" disabled={!selectedDescendantCount} onClick={handleToggleCollapsedBranch}>
+                      {isSelectedNodeCollapsed ? "Expand Branch" : "Collapse Branch"}
+                    </button>
+                    <button className="small-button" type="button" disabled={!selectedBranchNodeIds.length} onClick={handleTogglePinnedBranch}>
+                      {isSelectedBranchPinned ? "Unpin Branch" : "Pin Branch"}
+                    </button>
+                  </div>
+                </div>
+                <div className="summary-card">
                   <h3>Why this exists</h3>
-                  <div className="queue-meta">{selectedNode.whyThisExists}</div>
+                  <div className="queue-meta">{selectedNode.whyThisExists || selectedNode.description || "This node came from the current map and can be refined with stronger evidence or cleaner relationships."}</div>
+                  {whyThisHereSummary ? (
+                    <div className="queue-meta">
+                      Anchored in {whyThisHereSummary.domainLabel} with {whyThisHereSummary.sourceCount} source{whyThisHereSummary.sourceCount === 1 ? "" : "s"}.
+                      {whyThisHereSummary.upstreamLabels?.length ? ` Upstream: ${whyThisHereSummary.upstreamLabels.join(", ")}.` : ""}
+                      {whyThisHereSummary.downstreamLabels?.length ? ` Downstream: ${whyThisHereSummary.downstreamLabels.join(", ")}.` : ""}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="summary-card">
+                  <div className="node-note-card-header">
+                    <div>
+                      <h3>Node Notes</h3>
+                      <div className="queue-meta">Attach markdown notes to this node in this map only.</div>
+                    </div>
+                    <div className="queue-actions">
+                      <button className="small-button" type="button" onClick={handleToggleNodeNoteEditor}>
+                        {nodeNoteActionLabel}
+                      </button>
+                    </div>
+                  </div>
+                  {!isNodeNoteEditorOpen ? (
+                    selectedNode.hasNote ? (
+                      <>
+                        {selectedNode.noteUpdatedAt ? (
+                          <div className="queue-meta">Last updated {formatTimestamp(selectedNode.noteUpdatedAt)}.</div>
+                        ) : null}
+                        <MarkdownNotePreview
+                          content={selectedNode.note}
+                          className="node-note-markdown node-note-markdown-collapsed"
+                        />
+                      </>
+                    ) : (
+                      <div className="queue-meta">No note attached yet. Use the note button to add markdown for this node.</div>
+                    )
+                  ) : isNodeNoteFullscreen ? (
+                    <div className="queue-meta">Editing this note in fullscreen.</div>
+                  ) : renderNodeNoteEditor("inline")}
                 </div>
                 <div className="summary-card">
                   <h3>Clean Up This Node</h3>
@@ -2671,6 +3920,38 @@ export default function App() {
                       onChange={(event) => setNodeEditForm((current) => ({ ...current, summary: event.target.value }))}
                       placeholder="What this concept means in your own words"
                     />
+                    {canEditSelectedNodeRoles ? (
+                      <div className="semantic-role-editor">
+                        <div className="muted-copy">Keep one semantic node and mark every role it plays in the map.</div>
+                        <SelectControl
+                          value={nodeEditForm.primaryRole}
+                          onChange={(value) => setNodeEditForm((current) => ({
+                            ...current,
+                            primaryRole: value,
+                            secondaryRoles: current.secondaryRoles.filter((role) => role !== value)
+                          }))}
+                          options={SEMANTIC_ROLE_OPTIONS}
+                          ariaLabel="Primary node role"
+                        />
+                        <div className="semantic-role-toggles">
+                          {SEMANTIC_ROLE_OPTIONS.filter((option) => option.value !== nodeEditForm.primaryRole).map((option) => (
+                            <label key={option.value} className="semantic-role-toggle">
+                              <input
+                                type="checkbox"
+                                checked={nodeEditForm.secondaryRoles.includes(option.value)}
+                                onChange={(event) => setNodeEditForm((current) => ({
+                                  ...current,
+                                  secondaryRoles: event.target.checked
+                                    ? [...current.secondaryRoles, option.value]
+                                    : current.secondaryRoles.filter((role) => role !== option.value)
+                                }))}
+                              />
+                              <span>{option.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     <SelectControl
                       value={nodeEditForm.masteryState}
                       onChange={(value) => setNodeEditForm((current) => ({ ...current, masteryState: value }))}
@@ -2684,7 +3965,7 @@ export default function App() {
                   <div className="merge-box">
                     <div>
                       <strong>Merge duplicate</strong>
-                      <span>Use this when two {selectedNode.type} nodes describe the same thing. The current node is hidden from this session after merge.</span>
+                      <span>Use this when two nodes describe the same thing. The current node is hidden from this session after merge.</span>
                     </div>
                     <div className="import-form">
                       <SelectControl
@@ -2703,6 +3984,9 @@ export default function App() {
                   </div>
                 </div>
                 <div className="inspector-actions">
+                  <button className="ghost-button" type="button" onClick={handleToggleNodeNoteEditor}>
+                    {nodeNoteActionLabel}
+                  </button>
                   <button className="primary-button" disabled={isReviewing} onClick={() => handleReview(selectedNode.id, "approve")}>Approve Node</button>
                   <button className="danger-button" disabled={isReviewing} onClick={() => handleReview(selectedNode.id, "reject")}>Reject Node</button>
                   <button className="ghost-button" disabled={isLearningMore} onClick={handleLearnMore}>
@@ -2753,26 +4037,56 @@ export default function App() {
                   </div>
                 </div>
                 <div className="summary-card">
-                  <h3>Concept Bridge</h3>
-                  <div className="queue-meta">Find how this node connects to another part of the graph.</div>
-                  <div className="import-form">
-                    <SelectControl
-                      value={intersectionTargetId}
-                      onChange={setIntersectionTargetId}
-                      options={[
-                        { value: "", label: "Compare with..." },
-                        ...(graphState?.nodes ?? [])
-                          .filter((node) => node.id !== selectedNode.id && visibleNodeTypes.includes(node.type))
-                          .map((node) => ({ value: node.id, label: node.label }))
-                      ]}
-                      ariaLabel="Bridge comparison target"
-                    />
-                    <button className="secondary-button" disabled={isIntersecting || !intersectionTargetId} onClick={handleIntersect}>
+                  <h3>{selectedGroupNodes.length > 1 ? "Selected Concept Bridge" : "Concept Bridge"}</h3>
+                  <div className="queue-meta">
+                    {selectedGroupNodes.length > 1
+                      ? "Shift-click builds a bridge explanation across the current selection."
+                      : "Find how this node connects to another part of the graph."}
+                  </div>
+                  {selectedGroupNodes.length > 1 ? (
+                    <div className="graph-selection-pill-row inspector-selection-pill-row">
+                      {selectedGroupNodes.map((node) => (
+                        <button
+                          key={node.id}
+                          type="button"
+                          className={`graph-selection-pill ${node.id === selectedNodeId ? "is-primary" : ""}`}
+                          onClick={() => {
+                            selectGraphNode(node.id);
+                            handleCenterGraphOnNode(node.id, 1.3);
+                          }}
+                        >
+                          {node.label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="import-form">
+                      <SelectControl
+                        value={intersectionTargetId}
+                        onChange={setIntersectionTargetId}
+                        options={[
+                          { value: "", label: "Compare with..." },
+                          ...(graphState?.nodes ?? [])
+                            .filter((node) => node.id !== selectedNode.id && visibleNodeTypes.includes(node.type))
+                            .map((node) => ({ value: node.id, label: node.label }))
+                        ]}
+                        ariaLabel="Bridge comparison target"
+                      />
+                    </div>
+                  )}
+                  <div className="queue-actions">
+                    <button className="secondary-button" disabled={isIntersecting || !canRunBridge} onClick={handleIntersect}>
                       {isIntersecting ? "Finding bridge..." : "Find Bridge"}
                     </button>
+                    {selectedGroupNodes.length > 1 ? (
+                      <button className="ghost-button" type="button" onClick={clearGraphSelection}>
+                        Clear Selection
+                      </button>
+                    ) : null}
                   </div>
                   {intersectionResult ? (
                     <div className="learn-more-copy">
+                      {currentBridgeNodes.length ? `Across: ${currentBridgeNodes.map((node) => node.label).join(", ")}\n\n` : ""}
                       {intersectionResult.reasoning || "Bridge generated."}
                       {intersectionResult.bridge_concepts?.length ? `\n\nBridge concepts: ${intersectionResult.bridge_concepts.join(", ")}` : ""}
                     </div>
@@ -2816,8 +4130,29 @@ export default function App() {
               </>
             ) : null}
             </section>
-          )}
         </aside>
+        {isNodeNoteFullscreen && selectedNode ? (
+          <div className="node-note-fullscreen-overlay" role="dialog" aria-modal="true" aria-label={`Fullscreen note editor for ${selectedNode.label}`}>
+            <div className="node-note-fullscreen-shell">
+              <div className="node-note-fullscreen-header">
+                <div>
+                  <p className="panel-title">Node Notes</p>
+                  <h2>{selectedNode.label}</h2>
+                  <div className="queue-meta">Markdown note attached to this node in the current map.</div>
+                  {selectedNode.noteUpdatedAt ? (
+                    <div className="queue-meta">Last updated {formatTimestamp(selectedNode.noteUpdatedAt)}.</div>
+                  ) : null}
+                </div>
+                <div className="queue-actions">
+                  <button className="ghost-button" type="button" onClick={closeNodeNoteEditor}>
+                    Close Notes
+                  </button>
+                </div>
+              </div>
+              {renderNodeNoteEditor("fullscreen")}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

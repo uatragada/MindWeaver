@@ -18,8 +18,10 @@ test("chat import preview parses fenced JSON and reports cleanup warnings", () =
     { "title": "Kafka tradeoffs", "summary": "Compared queue semantics." }
   ],
   "nodes": [
+    { "type": "area", "label": "Technology" },
     { "type": "domain", "label": "Distributed Systems" },
-    { "type": "skill", "label": "distributed system" },
+    { "type": "topic", "label": "distributed system" },
+    { "type": "skill", "label": "Message Handling" },
     { "type": "concept", "label": "Event handling" }
   ],
   "relationships": [
@@ -31,7 +33,7 @@ test("chat import preview parses fenced JSON and reports cleanup warnings", () =
   `);
 
   assert.equal(preview.state, "ready");
-  assert.equal(preview.nodeCount, 3);
+  assert.equal(preview.nodeCount, 5);
   assert.equal(preview.relationshipCount, 2);
   assert.equal(preview.highlightCount, 1);
   assert.ok(preview.warnings.some((warning) => warning.includes("duplicate node label")));

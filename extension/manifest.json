@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Knowledge Session Logger",
   "version": "0.1.0",
-  "permissions": ["storage", "activeTab", "tabs", "scripting", "contextMenus"],
+  "permissions": ["storage", "activeTab", "tabs", "scripting", "contextMenus", "webNavigation"],
   "host_permissions": ["http://localhost/*", "http://127.0.0.1/*", "http://*/*", "https://*/*"],
   "action": {
     "default_title": "Knowledge Logger",

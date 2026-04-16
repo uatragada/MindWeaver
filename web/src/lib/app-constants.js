@@ -1,4 +1,5 @@
-export const visibleNodeTypes = ["goal", "domain", "skill", "concept"];
+export const HIERARCHY_NODE_TYPES = ["area", "domain", "topic", "skill", "concept"];
+export const visibleNodeTypes = ["goal", ...HIERARCHY_NODE_TYPES];
 export const OPEN_TABS_STORAGE_KEY = "mindweaver:open-map-tabs:v1";
 export const TAB_VIEW_STORAGE_KEY = "mindweaver:tab-view-state:v1";
 export const DEFAULT_LLM_PROVIDER = "openai";
@@ -12,11 +13,18 @@ export const EMPTY_IMPORT_FORM = {
 };
 export const DEFAULT_TAB_VIEW = {
   selectedNodeId: null,
+  selectedNodeIds: [],
   rightPanel: "inspector",
-  leftRailMinimized: false,
+  leftRailMinimized: true,
   rightRailMinimized: true,
   nodeSearch: "",
-  nodeTypeFilter: "all"
+  nodeTypeFilter: "all",
+  graphColorMode: "type",
+  graphPreset: "overview",
+  focusMode: "none",
+  focusDepth: "branch",
+  hideUnrelated: false,
+  collapsedNodeIds: []
 };
 
 export const RIGHT_PANEL_LABELS = {
@@ -34,9 +42,37 @@ export const RIGHT_PANEL_LABELS = {
 export const NODE_TYPE_OPTIONS = [
   { value: "all", label: "All Types" },
   { value: "goal", label: "Goal Nodes" },
+  { value: "area", label: "Areas" },
   { value: "domain", label: "Domains" },
+  { value: "topic", label: "Topics" },
   { value: "skill", label: "Skills" },
   { value: "concept", label: "Concepts" }
+];
+
+export const GRAPH_COLOR_MODE_OPTIONS = [
+  { value: "type", label: "Color by Type" },
+  { value: "area", label: "Color by Area" },
+  { value: "domain", label: "Color by Domain" },
+  { value: "topic", label: "Color by Topic" }
+];
+
+export const GRAPH_VIEW_PRESET_OPTIONS = [
+  { value: "overview", label: "Overview" },
+  { value: "focused", label: "Branch" },
+  { value: "review", label: "Review" },
+  { value: "gaps", label: "Gaps" }
+];
+
+export const GRAPH_FOCUS_MODE_OPTIONS = [
+  { value: "none", label: "All Context" },
+  { value: "both", label: "Up + Down" },
+  { value: "upstream", label: "Upstream" },
+  { value: "downstream", label: "Downstream" }
+];
+
+export const GRAPH_FOCUS_DEPTH_OPTIONS = [
+  { value: "neighbors", label: "1 Hop" },
+  { value: "branch", label: "Full Branch" }
 ];
 
 export const SOURCE_TYPE_OPTIONS = [
@@ -69,6 +105,13 @@ export const MASTERY_OPTIONS = [
   { value: "seen", label: "Seen" },
   { value: "understood", label: "Understood" },
   { value: "verified", label: "Verified" }
+];
+
+export const SEMANTIC_ROLE_OPTIONS = [
+  { value: "area", label: "Area" },
+  { value: "domain", label: "Domain" },
+  { value: "topic", label: "Topic" },
+  { value: "skill", label: "Skill" }
 ];
 
 export const RELATIONSHIP_TYPE_OPTIONS = [

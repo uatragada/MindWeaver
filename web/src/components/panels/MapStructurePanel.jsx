@@ -1,13 +1,18 @@
+import SelectControl from "../controls/SelectControl.jsx";
+
 export default function MapStructurePanel({
   mapNameDraft,
   onMapNameChange,
   onSaveMapName,
   isRenamingMap,
   hasMapNameChanges,
-  goalNodeDraft,
-  onGoalNodeDraftChange,
-  onCreateGoalNode,
-  isCreatingGoalNode,
+  quickAddNodeType,
+  onQuickAddNodeTypeChange,
+  quickAddNodeLabel,
+  onQuickAddNodeLabelChange,
+  onCreateNode,
+  isCreatingNode,
+  quickAddNodeTypeOptions,
   primaryGoalNode,
   isRefiningMap,
   onRefineMap,
@@ -20,7 +25,7 @@ export default function MapStructurePanel({
     <section className="panel structure-panel">
       <p className="panel-title">Map Structure</p>
       <p className="panel-subtitle">
-        Keep the map framing clear. Add a top-level goal node when it helps, or run a conservative refine pass to clean up the current graph.
+        Keep the map framing clear. Add areas, topics, or legacy goal nodes when they help, or run a conservative refine pass to clean up the current graph.
       </p>
       <div className="structure-field-stack">
         <div className="toolbar-note">Map name</div>
@@ -37,14 +42,23 @@ export default function MapStructurePanel({
         </div>
       </div>
       <div className="toolbar-inline-form">
+        <SelectControl
+          className="topbar-type-filter"
+          value={quickAddNodeType}
+          onChange={onQuickAddNodeTypeChange}
+          options={quickAddNodeTypeOptions}
+          ariaLabel="Quick add node type"
+        />
         <input
           className="text-input"
-          placeholder={primaryGoalNode ? "Add another top-level goal node" : "Add a top-level goal node"}
-          value={goalNodeDraft}
-          onChange={(event) => onGoalNodeDraftChange(event.target.value)}
+          placeholder={quickAddNodeType === "goal"
+            ? (primaryGoalNode ? "Add another top-level goal node" : "Add a top-level goal node")
+            : `Add a ${quickAddNodeType} node`}
+          value={quickAddNodeLabel}
+          onChange={(event) => onQuickAddNodeLabelChange(event.target.value)}
         />
-        <button className="primary-button" type="button" disabled={isCreatingGoalNode || !goalNodeDraft.trim()} onClick={onCreateGoalNode}>
-          {isCreatingGoalNode ? "Adding..." : "Add Goal Node"}
+        <button className="primary-button" type="button" disabled={isCreatingNode || !quickAddNodeLabel.trim()} onClick={onCreateNode}>
+          {isCreatingNode ? "Adding..." : `Add ${quickAddNodeType.charAt(0).toUpperCase()}${quickAddNodeType.slice(1)}`}
         </button>
       </div>
       <div className="toolbar-note">

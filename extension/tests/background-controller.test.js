@@ -36,6 +36,9 @@ function createChromeMock() {
       create() {},
       onClicked: { addListener() {} }
     },
+    webNavigation: {
+      onHistoryStateUpdated: { addListener() {} }
+    },
     runtime: {
       onInstalled: { addListener() {} },
       onMessage: { addListener() {} }
@@ -253,4 +256,75 @@ test("auto-save ignores tab updates while the toggle is off", async () => {
 
   assert.equal(result.skipped, true);
   assert.equal(requests.length, 0);
+});
+
+test("auto-save queues multiple visited pages so they send one after another", async () => {
+  const chromeApi = createChromeMock();
+  chromeApi.storageState.mindweaverAutoCaptureEnabled = true;
+  const tabsById = new Map([
+    [31, { id: 31, active: true, title: "Queued Article A", url: "https://docs.example/queued-a" }],
+    [32, { id: 32, active: true, title: "Queued Article B", url: "https://docs.example/queued-b" }]
+  ]);
+
+  chromeApi.tabs.get = async (tabId) => tabsById.get(tabId);
+  chromeApi.scripting.executeScript = async ({ target }) => {
+    const tab = tabsById.get(target.tabId);
+    return [{
+      result: {
+        ok: true,
+        payload: {
+          sourceType: "page",
+          title: tab.title,
+          url: tab.url,
+          excerpt: `${tab.title} excerpt`,
+          content: `${tab.title} content`
+        }
+      }
+    }];
+  };
+
+  const sendOrder = [];
+  let releaseFirstSend = null;
+  const firstSendGate = new Promise((resolve) => {
+    releaseFirstSend = resolve;
+  });
+
+  const controller = createBackgroundController({
+    chromeApi,
+    client: {
+      async fetchJson(path) {
+        if (path === "/api/health") {
+          return { contentLimitChars: 16000 };
+        }
+        return {
+          activeSessionId: "session-auto",
+          activeSession: { id: "session-auto", goal: "Auto capture map" }
+        };
+      },
+      async request(path, options) {
+        const body = JSON.parse(options.body);
+        sendOrder.push(body.title);
+        if (sendOrder.length === 1) {
+          await firstSendGate;
+        }
+        return {
+          status: 200,
+          payload: { ok: true, deduped: false }
+        };
+      }
+    }
+  });
+
+  const firstCapturePromise = controller.maybeAutoCaptureTab(tabsById.get(31));
+  const secondCapturePromise = controller.maybeAutoCaptureTab(tabsById.get(32));
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(sendOrder, ["Queued Article A"]);
+
+  releaseFirstSend();
+
+  const [firstResult, secondResult] = await Promise.all([firstCapturePromise, secondCapturePromise]);
+  assert.equal(firstResult.ok, true);
+  assert.equal(secondResult.ok, true);
+  assert.deepEqual(sendOrder, ["Queued Article A", "Queued Article B"]);
 });

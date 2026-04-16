@@ -76,12 +76,12 @@ Core collections:
 
 1. A user clicks `Save Current Page` in the extension or turns on `Continuous Save`.
 2. The extension creates a session if needed.
-3. The background worker injects `content.js` into the active tab when the user saves manually or a newly visited page is observed while the toggle is on.
+3. The background worker injects `content.js` into the active tab when the user saves manually, a newly visited page is observed while the toggle is on, or a single-page app changes routes.
 4. The extracted page payload is sent to `POST /api/ingest`.
 5. The server runs page saves through a FIFO queue and dedupes by `sessionId + url`.
 6. The server checks whether the page is worth ingesting, then classifies the source with the selected AI provider and provider-specific content limits.
 7. Structured JSON responses are validated before they are allowed to mutate the graph.
-8. Nodes, edges, artifact provenance, review state, and recommendations are updated, then exact duplicate labels are merged conservatively.
+8. The extension-side capture queue sends saved page payloads one after another, then the server updates nodes, edges, artifact provenance, review state, and recommendations before exact duplicate labels are merged conservatively.
 9. The web app fetches `GET /api/graph/:sessionId` and renders the updated map when the user refreshes the canvas or switches sessions.
 
 ## Learning Loop

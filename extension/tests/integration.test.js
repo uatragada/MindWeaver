@@ -316,6 +316,7 @@ test("extension workflow creates maps, switches targets, toggles continuous save
     await popupPage.bringToFront();
     await popupPage.click("#autoCapture");
     await popupPage.waitForFunction(() => document.querySelector("#autoCapture")?.textContent?.includes("On"));
+    await popupPage.close();
 
     await articlePage.bringToFront();
     await articlePage.goto(`${articleServer.url}?auto=1`, { waitUntil: "domcontentloaded" });
@@ -325,9 +326,16 @@ test("extension workflow creates maps, switches targets, toggles continuous save
     await articlePage.goto(`${articleServer.url}?auto=2`, { waitUntil: "domcontentloaded" });
     graphB = await waitForArtifactCount(apiServer.baseUrl, mapB.id, autoCaptureBaseline + 1);
 
-    await popupPage.bringToFront();
-    await popupPage.click("#autoCapture");
-    await popupPage.waitForFunction(() => document.querySelector("#autoCapture")?.textContent?.includes("Off"));
+    const reopenedPopupPage = await browser.context.newPage();
+    reopenedPopupPage.on("dialog", async (dialog) => {
+      dialogs.push(dialog.message());
+      await dialog.dismiss();
+    });
+    await reopenedPopupPage.goto(`chrome-extension://${browser.extensionId}/popup.html`);
+    await reopenedPopupPage.waitForSelector("#status");
+    await reopenedPopupPage.waitForFunction(() => document.querySelector("#autoCapture")?.textContent?.includes("On"));
+    await reopenedPopupPage.click("#autoCapture");
+    await reopenedPopupPage.waitForFunction(() => document.querySelector("#autoCapture")?.textContent?.includes("Off"));
 
     await articlePage.bringToFront();
     await articlePage.goto(`${articleServer.url}?auto=3`, { waitUntil: "domcontentloaded" });
@@ -338,10 +346,9 @@ test("extension workflow creates maps, switches targets, toggles continuous save
     const finalGraphB = await getGraph(apiServer.baseUrl, mapB.id);
     assert.equal(finalGraphB.artifacts.length, graphB.artifacts.length);
 
-    await popupPage.bringToFront();
-    await popupPage.reload();
-    await popupPage.waitForFunction(() => document.querySelector("#lastCapture")?.textContent?.includes("Map B"));
-    await popupPage.waitForFunction(() => document.querySelector("#autoCapture")?.textContent?.includes("Off"));
+    await reopenedPopupPage.reload();
+    await reopenedPopupPage.waitForFunction(() => document.querySelector("#lastCapture")?.textContent?.includes("Map B"));
+    await reopenedPopupPage.waitForFunction(() => document.querySelector("#autoCapture")?.textContent?.includes("Off"));
 
     assert.deepEqual(dialogs, []);
   } finally {

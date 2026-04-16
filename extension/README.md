@@ -8,7 +8,7 @@ The Chrome extension is the browser capture surface for MindWeaver. It supports 
 - `Save Current Page` is queued server-side, so rapid captures are processed in order if one save is already running.
 - The popup shows destination maps from the same server-backed tab list used by the Web UI, so both surfaces stay in sync.
 - If no map is active, the popup can create one first using the optional map-name field.
-- `Continuous Save` is a green on/off toggle that saves each newly visited page while it is enabled.
+- `Continuous Save` is a green on/off toggle that snapshots each newly visited page while it is enabled, queues those saves in the extension, and sends them to MindWeaver one after another.
 - `Save selection to MindWeaver` in the right-click menu saves highlighted text as evidence.
 - `Open MindWeaver` opens the active map in the reachable local app surface, or the last-used map if capture is currently idle.
 
@@ -17,7 +17,7 @@ The Chrome extension is the browser capture surface for MindWeaver. It supports 
 The extension does not register a permanent content script across all sites, but it can automatically capture newly visited pages while the user-enabled `Continuous Save` toggle is on.
 
 - `manifest.json` does not register a content script across all URLs.
-- `content.js` is injected by the background worker after `Save Current Page` or when `Continuous Save` observes a newly visited page.
+- `content.js` is injected by the background worker after `Save Current Page`, when `Continuous Save` observes a newly visited page, or when a single-page app changes routes.
 - Page extraction happens in the active tab only.
 - The extension sends data only to the local server at `http://localhost:3001`.
 

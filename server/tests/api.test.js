@@ -12,9 +12,11 @@ function createClassificationSchema({ minConcepts = 1, maxConcepts = 8 } = {}) {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["domain", "skill", "concepts"],
+    required: ["area", "domain", "topic", "skill", "concepts"],
     properties: {
+      area: { type: "string" },
       domain: { type: "string", minLength: 1 },
+      topic: { type: "string" },
       skill: { type: "string", minLength: 1 },
       concepts: {
         type: "array",
@@ -103,13 +105,16 @@ function createMockOpenAI() {
             };
           }
 
-          if (prompt.includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}')) {
+          if (
+            prompt.includes('Return only JSON: {"area":"...", "domain":"...", "topic":"...", "skill":"...", "concepts":["..."]}')
+            || prompt.includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}')
+          ) {
             if (prompt.includes("Octet Concepts")) {
               return {
                 choices: [
                   {
                     message: {
-                      content: '{"domain":"distributed systems","skill":"message flow","concepts":["producer","broker","consumer","retry policy","consumer lag","dead letter queue","idempotency key","partition leader"]}'
+                      content: '{"area":"technology","domain":"distributed systems","topic":"event-driven systems","skill":"message flow","concepts":["producer","broker","consumer","retry policy","consumer lag","dead letter queue","idempotency key","partition leader"]}'
                     }
                   }
                 ]
@@ -121,7 +126,7 @@ function createMockOpenAI() {
                 choices: [
                   {
                     message: {
-                      content: '{"domain":"distributed systems","skill":"consensus","concepts":["raft"]}'
+                      content: '{"area":"technology","domain":"distributed systems","topic":"distributed coordination","skill":"consensus","concepts":["raft"]}'
                     }
                   }
                 ]
@@ -132,7 +137,19 @@ function createMockOpenAI() {
               choices: [
                 {
                   message: {
-                    content: '{"domain":"javascript","skill":"closures","concepts":["closure"]}'
+                    content: '{"area":"software engineering","domain":"javascript","topic":"functions","skill":"closures","concepts":["closure"]}'
+                  }
+                }
+              ]
+            };
+          }
+
+          if (prompt.includes('Return only JSON: {"bridge_concepts":["concept1"],"reasoning":"..."}')) {
+            return {
+              choices: [
+                {
+                  message: {
+                    content: '{"bridge_concepts":["idempotency"],"reasoning":"Idempotency connects retries to safe consumer behavior."}'
                   }
                 }
               ]
@@ -259,19 +276,22 @@ async function startMockOllamaServer(options = {}) {
       } else {
         content = '{"should_ingest":true,"reason":"substantive"}';
       }
-    } else if (prompt.includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}')) {
+    } else if (
+      prompt.includes('Return only JSON: {"area":"...", "domain":"...", "topic":"...", "skill":"...", "concepts":["..."]}')
+      || prompt.includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}')
+    ) {
       if (options.failLongPageStructuredPrompts && prompt.includes("Title: Long page source") && !prompt.includes("condensed excerpt from a longer source")) {
         content = "The page covers retries, idempotence, and distributed systems, but I am not returning valid JSON.";
       } else if (options.requireFocusedLocalClassificationFallback && prompt.includes("Title: Focused fallback source")) {
         content = prompt.includes("MIDDLE NOISE")
           ? "I can explain this source, but I am still not returning valid JSON."
-          : '{"domain":"government","skill":"government structure","concepts":["federal republic","state governance","constitutional system"]}';
+          : '{"area":"civics","domain":"government","topic":"federal systems","skill":"government structure","concepts":["federal republic","state governance","constitutional system"]}';
       } else if (options.tooManyClassificationConcepts && prompt.includes("Title: Overlong concepts source")) {
-        content = '{"domain":"distributed systems","skill":"message flow","concepts":["producer","broker","consumer","retry policy","consumer lag","dead letter queue","idempotency key","partition leader","outbox pattern","offset commit"]}';
+        content = '{"area":"technology","domain":"distributed systems","topic":"event-driven systems","skill":"message flow","concepts":["producer","broker","consumer","retry policy","consumer lag","dead letter queue","idempotency key","partition leader","outbox pattern","offset commit"]}';
       } else if (options.stringifiedClassificationConcepts && prompt.includes("Title: Stringified concepts source")) {
-        content = '{"domain":"distributed systems","skill":"message flow","concepts":"producer, broker, consumer, retry policy"}';
+        content = '{"area":"technology","domain":"distributed systems","topic":"event-driven systems","skill":"message flow","concepts":"producer, broker, consumer, retry policy"}';
       } else {
-        content = '{"domain":"distributed systems","skill":"delivery guarantees","concepts":["at least once delivery"]}';
+        content = '{"area":"technology","domain":"distributed systems","topic":"delivery semantics","skill":"delivery guarantees","concepts":["at least once delivery"]}';
       }
     } else if (prompt.includes('Return only JSON: {"directly_covered": ["concept1", "concept2"]}')) {
       content = '{"directly_covered":["at least once delivery"]}';
@@ -340,7 +360,37 @@ async function startTestServer(options = {}) {
   };
 }
 
-test("POST /api/sessions creates a session and goal node", async () => {
+async function createSessionWithManualNodes(ctx, goal, nodeSpecs) {
+  const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal })
+  });
+  const session = await sessionResponse.json();
+  assert.equal(sessionResponse.status, 200);
+
+  const nodes = [];
+  for (const nodeSpec of nodeSpecs) {
+    const nodeResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        ...nodeSpec
+      })
+    });
+    const nodePayload = await nodeResponse.json();
+    assert.equal(nodeResponse.status, 200);
+    nodes.push(nodePayload.node);
+  }
+
+  return {
+    session,
+    nodes
+  };
+}
+
+test("POST /api/sessions creates an empty map without a goal node", async () => {
   const ctx = await startTestServer();
 
   try {
@@ -353,17 +403,17 @@ test("POST /api/sessions creates a session and goal node", async () => {
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.ok(body.id);
-    assert.ok(body.goalId);
+    assert.equal(body.goalId, null);
     assert.equal(ctx.db.data.sessions.length, 1);
-    assert.equal(ctx.db.data.goals.length, 1);
+    assert.equal(ctx.db.data.goals.length, 0);
     assert.equal(ctx.db.data.preferences.activeSessionId, body.id);
-    assert.equal(ctx.db.data.nodes.some((node) => node.id === body.goalId && node.type === "goal"), true);
+    assert.equal(ctx.db.data.nodes.some((node) => node.type === "goal"), false);
   } finally {
     await ctx.close();
   }
 });
 
-test("PATCH /api/sessions/:id renames the map and syncs the matching primary goal node", async () => {
+test("PATCH /api/sessions/:id renames the map without retitling a manually created goal", async () => {
   const ctx = await startTestServer();
 
   try {
@@ -373,6 +423,17 @@ test("PATCH /api/sessions/:id renames the map and syncs the matching primary goa
       body: JSON.stringify({ goal: "Original map name" })
     });
     const created = await createResponse.json();
+
+    const goalResponse = await fetch(`${ctx.baseUrl}/api/goals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: created.id,
+        title: "Original learning target"
+      })
+    });
+    const goal = await goalResponse.json();
+    assert.equal(goalResponse.status, 200);
 
     const renameResponse = await fetch(`${ctx.baseUrl}/api/sessions/${created.id}`, {
       method: "PATCH",
@@ -384,14 +445,14 @@ test("PATCH /api/sessions/:id renames the map and syncs the matching primary goa
     assert.equal(renameResponse.status, 200);
     assert.equal(renamed.ok, true);
     assert.equal(renamed.session.goal, "Renamed systems map");
-    assert.equal(renamed.updatedPrimaryGoalNode, true);
+    assert.equal(renamed.updatedPrimaryGoalNode, false);
     assert.equal(renamed.sessionTarget.activeSession?.goal, "Renamed systems map");
 
     const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${created.id}`);
     const graph = await graphResponse.json();
     assert.equal(graphResponse.status, 200);
-    assert.equal(graph.goals[0]?.title, "Renamed systems map");
-    assert.equal(graph.nodes.some((node) => node.id === created.goalId && node.label === "Renamed systems map"), true);
+    assert.equal(graph.goals[0]?.title, "Original learning target");
+    assert.equal(graph.nodes.some((node) => node.id === goal.id && node.label === "Original learning target"), true);
   } finally {
     await ctx.close();
   }
@@ -506,7 +567,7 @@ test("requestStructuredJson accepts schema-valid local JSON responses", async ()
       messages: [
         {
           role: "system",
-          content: 'Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}'
+            content: 'Return only JSON: {"area":"...", "domain":"...", "topic":"...", "skill":"...", "concepts":["..."]}'
         },
         {
           role: "user",
@@ -516,7 +577,9 @@ test("requestStructuredJson accepts schema-valid local JSON responses", async ()
     });
 
     assert.deepEqual(result, {
+      area: "technology",
       domain: "distributed systems",
+      topic: "delivery semantics",
       skill: "delivery guarantees",
       concepts: ["at least once delivery"]
     });
@@ -543,7 +606,7 @@ test("requestStructuredJson rejects local JSON that fails schema validation", as
         messages: [
           {
             role: "system",
-            content: 'Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}'
+            content: 'Return only JSON: {"area":"...", "domain":"...", "topic":"...", "skill":"...", "concepts":["..."]}'
           },
           {
             role: "user",
@@ -627,6 +690,17 @@ test("local LLM settings persist and power Ollama-backed tasks", async () => {
     const graphAfterImport = await (await fetch(`${ctx.baseUrl}/api/graph/${session.id}`)).json();
     assert.equal(graphAfterImport.nodes.some((node) => node.label === "at least once delivery"), true);
 
+    const goalResponse = await fetch(`${ctx.baseUrl}/api/goals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        title: "Improve delivery guarantees"
+      })
+    });
+    const goal = await goalResponse.json();
+    assert.equal(goalResponse.status, 200);
+
     const learnMoreResponse = await fetch(`${ctx.baseUrl}/api/learn-more`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -646,7 +720,7 @@ test("local LLM settings persist and power Ollama-backed tasks", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId: session.id,
-        goalId: session.goalId
+        goalId: goal.id
       })
     });
     const gaps = await gapsResponse.json();
@@ -727,8 +801,10 @@ test("local LLM settings persist and power Ollama-backed tasks", async () => {
     const classificationRequest = structuredRequests.find((entry) => getPrompt(entry).includes("Classify this source into one domain, one skill, and 1-8 core concepts."));
     assert.ok(classificationRequest);
     assert.equal(classificationRequest.payload.format.additionalProperties, false);
-    assert.deepEqual(classificationRequest.payload.format.required, ["domain", "skill", "concepts"]);
+    assert.deepEqual(classificationRequest.payload.format.required, ["area", "domain", "topic", "skill", "concepts"]);
+    assert.equal(classificationRequest.payload.format.properties.area.type, "string");
     assert.equal(classificationRequest.payload.format.properties.domain.type, "string");
+    assert.equal(classificationRequest.payload.format.properties.topic.type, "string");
     assert.equal(classificationRequest.payload.format.properties.skill.type, "string");
     assert.equal(classificationRequest.payload.format.properties.concepts.type, "array");
     assert.equal(classificationRequest.payload.format.properties.concepts.items.type, "string");
@@ -1013,7 +1089,10 @@ test("POST /api/ingest queues concurrent page saves so later saves wait for the 
             };
           }
 
-          if (prompt.includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}')) {
+          if (
+            prompt.includes('Return only JSON: {"area":"...", "domain":"...", "topic":"...", "skill":"...", "concepts":["..."]}')
+            || prompt.includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}')
+          ) {
             if (prompt.includes("Title: First queued source")) {
               classificationOrder.push("first-start");
               firstClassificationStartedResolve?.();
@@ -1023,11 +1102,11 @@ test("POST /api/ingest queues concurrent page saves so later saves wait for the 
               classificationOrder.push("first-end");
               return {
                 choices: [
-                  {
-                    message: {
-                      content: '{"domain":"distributed systems","skill":"message flow","concepts":["first queue item"]}'
+                    {
+                      message: {
+                        content: '{"area":"technology","domain":"distributed systems","topic":"event-driven systems","skill":"message flow","concepts":["first queue item"]}'
+                      }
                     }
-                  }
                 ]
               };
             }
@@ -1037,11 +1116,11 @@ test("POST /api/ingest queues concurrent page saves so later saves wait for the 
               classificationOrder.push("second-end");
               return {
                 choices: [
-                  {
-                    message: {
-                      content: '{"domain":"distributed systems","skill":"message flow","concepts":["second queue item"]}'
+                    {
+                      message: {
+                        content: '{"area":"technology","domain":"distributed systems","topic":"event-driven systems","skill":"message flow","concepts":["second queue item"]}'
+                      }
                     }
-                  }
                 ]
               };
             }
@@ -1250,7 +1329,9 @@ test("local imports accept content beyond the OpenAI payload cap", async () => {
     assert.equal(importResponse.status, 200);
     assert.equal(imported.ok, true);
     assert.deepEqual(imported.classification, {
+      area: "technology",
       domain: "distributed system",
+      topic: "delivery semantic",
       skill: "delivery guarantee",
       concepts: ["at least once delivery"]
     });
@@ -1304,11 +1385,13 @@ test("local ingest retries long structured page analysis with condensed content 
       .filter((entry) => getPrompt(entry).includes("should_ingest"));
     const classificationPrompts = ollama.requests
       .filter((entry) => getPrompt(entry).includes("Title: Long page source"))
-      .filter((entry) => getPrompt(entry).includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}'));
+      .filter((entry) => getPrompt(entry).includes('Return only JSON: {"area":"...", "domain":"...", "topic":"...", "skill":"...", "concepts":["..."]}'));
 
     assert.equal(ingestResponse.status, 200);
     assert.deepEqual(ingested.classification, {
+      area: "technology",
       domain: "distributed system",
+      topic: "delivery semantic",
       skill: "delivery guarantee",
       concepts: ["at least once delivery"]
     });
@@ -1375,10 +1458,12 @@ test("local ingest falls back to a focused lead excerpt when broader local class
 
     const classificationPrompts = ollama.requests
       .filter((entry) => getPrompt(entry).includes("Title: Focused fallback source"))
-      .filter((entry) => getPrompt(entry).includes('Return only JSON: {"domain":"...", "skill":"...", "concepts":["..."]}'));
+      .filter((entry) => getPrompt(entry).includes('Return only JSON: {"area":"...", "domain":"...", "topic":"...", "skill":"...", "concepts":["..."]}'));
 
     assert.equal(ingestResponse.status, 200);
+    assert.equal(ingested.classification.area, "civic");
     assert.equal(ingested.classification.domain, "government");
+    assert.equal(ingested.classification.topic, "federal system");
     assert.equal(ingested.classification.skill, "government structure");
     assert.deepEqual(ingested.classification.concepts, [
       "federal republic",
@@ -1485,11 +1570,25 @@ test("chat history prompt and structured import turn third-party conversation co
       ],
       nodes: [
         {
+          type: "area",
+          label: "technology",
+          description: "Broad umbrella for the user's systems and software interests.",
+          confidence: 0.92,
+          evidence: ["The user repeatedly explores technical systems and implementation tradeoffs."]
+        },
+        {
           type: "domain",
           label: "event-driven architecture",
           description: "The user has durable interest in asynchronous services, brokers, and event flow design.",
           confidence: 0.9,
           evidence: ["Repeatedly asked about producers, consumers, and event delivery tradeoffs."]
+        },
+        {
+          type: "topic",
+          label: "asynchronous messaging",
+          description: "Subarea focused on brokers, consumers, and message-driven design.",
+          confidence: 0.87,
+          evidence: ["Frequently revisits event flow, brokers, and queue behavior."]
         },
         {
           type: "skill",
@@ -1515,7 +1614,10 @@ test("chat history prompt and structured import turn third-party conversation co
         }
       ],
       relationships: [
+        { source: "technology", target: "event-driven architecture", type: "contains", label: "contains" },
         { source: "event-driven architecture", target: "message handling", type: "contains", label: "contains" },
+        { source: "event-driven architecture", target: "asynchronous messaging", type: "contains", label: "contains" },
+        { source: "asynchronous messaging", target: "message handling", type: "contains", label: "contains" },
         { source: "message handling", target: "consumer lag", type: "builds_on", label: "builds_on" },
         { source: "message handling", target: "event consumer", type: "builds_on", label: "builds_on" }
       ]
@@ -1532,14 +1634,16 @@ test("chat history prompt and structured import turn third-party conversation co
     const imported = await importResponse.json();
     assert.equal(importResponse.status, 200);
     assert.equal(imported.deduped, false);
-    assert.equal(imported.importedNodeCount, 4);
-    assert.equal(imported.importedRelationshipCount, 3);
+    assert.equal(imported.importedNodeCount, 6);
+    assert.equal(imported.importedRelationshipCount, 6);
 
     const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${session.id}`);
     const graph = await graphResponse.json();
     assert.equal(graphResponse.status, 200);
     assert.equal(graph.artifacts.some((artifact) => artifact.sourceType === "chatgpt"), true);
+    assert.equal(graph.nodes.some((node) => node.label === "technology" && node.type === "area"), true);
     assert.equal(graph.nodes.some((node) => node.label === "event driven architecture"), true);
+    assert.equal(graph.nodes.some((node) => node.label === "asynchronous messaging" && node.type === "topic"), true);
     assert.equal(graph.nodes.some((node) => node.label === "message handling"), true);
     assert.equal(graph.nodes.some((node) => node.label === "consumer lag" && node.evidenceCount >= 1), true);
     assert.equal(graph.edges.some((edge) => edge.type === "builds_on" && (typeof edge.target === "object" ? edge.target.id : edge.target).includes("consumer lag")), true);
@@ -1744,7 +1848,69 @@ test("POST /api/nodes can create a primary goal node for a map that started unna
     assert.equal(created.node.type, "goal");
     assert.equal(created.node.label, "Build a reliable systems map");
     assert.equal(created.graph.goals.length, 1);
-    assert.equal(ctx.db.data.sessions.find((entry) => entry.id === session.id)?.goal, "Build a reliable systems map");
+    assert.equal(ctx.db.data.sessions.find((entry) => entry.id === session.id)?.goal, null);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("POST /api/nodes supports area and topic with hierarchy-aware default parents", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Understand distributed systems" })
+    });
+    const session = await sessionResponse.json();
+
+    const areaResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "area",
+        label: "technology"
+      })
+    });
+    const createdArea = await areaResponse.json();
+
+    const domainResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "domain",
+        label: "distributed systems"
+      })
+    });
+    const createdDomain = await domainResponse.json();
+
+    const topicResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "topic",
+        label: "asynchronous messaging"
+      })
+    });
+    const createdTopic = await topicResponse.json();
+
+    assert.equal(areaResponse.status, 200);
+    assert.equal(domainResponse.status, 200);
+    assert.equal(topicResponse.status, 200);
+    assert.equal(createdArea.node.type, "area");
+    assert.equal(createdDomain.node.type, "domain");
+    assert.equal(createdTopic.node.type, "topic");
+
+    const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${session.id}`);
+    const graph = await graphResponse.json();
+    assert.equal(graphResponse.status, 200);
+    assert.equal(graph.edges.some((edge) => edge.source === `session:${session.id}` && edge.target === createdArea.node.id && edge.type === "contains"), true);
+    assert.equal(graph.edges.some((edge) => edge.source === createdArea.node.id && edge.target === createdDomain.node.id && edge.type === "contains"), true);
+    assert.equal(graph.edges.some((edge) => edge.source === createdDomain.node.id && edge.target === createdTopic.node.id && edge.type === "contains"), true);
   } finally {
     await ctx.close();
   }
@@ -1802,6 +1968,261 @@ test("PATCH /api/nodes/:id returns the surviving node after an exact-label merge
   }
 });
 
+test("PATCH /api/nodes/:id stores markdown notes, records timeline entries, and exports them", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const { session, nodes } = await createSessionWithManualNodes(ctx, "Note export map", [
+      { type: "concept", label: "idempotency" }
+    ]);
+    const node = nodes[0];
+    const note = [
+      "# Idempotency",
+      "",
+      "- Handles retry safety",
+      "- Prevents duplicate side effects",
+      "",
+      "| Signal | Meaning |",
+      "| --- | --- |",
+      "| key | dedupe token |"
+    ].join("\n");
+
+    const noteResponse = await fetch(`${ctx.baseUrl}/api/nodes/${encodeURIComponent(node.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        note
+      })
+    });
+    const notePayload = await noteResponse.json();
+
+    assert.equal(noteResponse.status, 200);
+    assert.equal(notePayload.node.note, note);
+    assert.equal(notePayload.node.hasNote, true);
+    assert.equal(typeof notePayload.node.noteUpdatedAt, "number");
+    assert.equal(notePayload.node.history.some((event) => event.summary === "Added a note."), true);
+
+    const updatedNote = `${note}\n\n\`\`\`js\nconst key = "event-42";\n\`\`\``;
+    const updateResponse = await fetch(`${ctx.baseUrl}/api/nodes/${encodeURIComponent(node.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        note: updatedNote
+      })
+    });
+    const updatePayload = await updateResponse.json();
+
+    assert.equal(updateResponse.status, 200);
+    assert.equal(updatePayload.node.note, updatedNote);
+    assert.equal(updatePayload.node.history.some((event) => event.summary === "Updated the note."), true);
+
+    const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${encodeURIComponent(session.id)}`);
+    const graph = await graphResponse.json();
+    assert.equal(graphResponse.status, 200);
+    assert.equal(graph.nodes.find((entry) => entry.id === node.id)?.note, updatedNote);
+
+    const exportResponse = await fetch(`${ctx.baseUrl}/api/sessions/${encodeURIComponent(session.id)}/export`);
+    const exportData = await exportResponse.json();
+    assert.equal(exportResponse.status, 200);
+    assert.equal(exportData.notes.length, 1);
+    assert.equal(exportData.notes[0].note, updatedNote);
+    assert.equal(exportData.concepts[0].note, updatedNote);
+
+    const markdownExportResponse = await fetch(`${ctx.baseUrl}/api/sessions/${encodeURIComponent(session.id)}/export?format=md`);
+    const markdownExport = await markdownExportResponse.text();
+    assert.equal(markdownExportResponse.status, 200);
+    assert.equal(markdownExport.includes("## Node Notes"), true);
+    assert.equal(markdownExport.includes("# Idempotency"), true);
+    assert.equal(markdownExport.includes("| Signal | Meaning |"), true);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("PATCH /api/nodes/:id keeps notes scoped per session and can clear them", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionOneResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Session one" })
+    });
+    const sessionOne = await sessionOneResponse.json();
+    const sessionTwoResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Session two" })
+    });
+    const sessionTwo = await sessionTwoResponse.json();
+
+    const areaResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: sessionOne.id,
+        type: "area",
+        label: "distributed systems"
+      })
+    });
+    const createdArea = await areaResponse.json();
+    assert.equal(areaResponse.status, 200);
+
+    const storedArea = ctx.db.data.nodes.find((entry) => entry.id === createdArea.node.id);
+    storedArea.sessionIds.push(sessionTwo.id);
+    await ctx.db.write();
+
+    const sessionOneNote = "Shared area note for **session one**.";
+    const sessionTwoNote = "Shared area note for _session two_.";
+
+    const sessionOneNoteResponse = await fetch(`${ctx.baseUrl}/api/nodes/${encodeURIComponent(createdArea.node.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: sessionOne.id,
+        note: sessionOneNote
+      })
+    });
+    assert.equal(sessionOneNoteResponse.status, 200);
+
+    const sessionOneGraphResponse = await fetch(`${ctx.baseUrl}/api/graph/${encodeURIComponent(sessionOne.id)}`);
+    const sessionOneGraph = await sessionOneGraphResponse.json();
+    const sessionTwoGraphBeforeResponse = await fetch(`${ctx.baseUrl}/api/graph/${encodeURIComponent(sessionTwo.id)}`);
+    const sessionTwoGraphBefore = await sessionTwoGraphBeforeResponse.json();
+    assert.equal(sessionOneGraph.nodes.find((entry) => entry.id === createdArea.node.id)?.note, sessionOneNote);
+    assert.equal(sessionTwoGraphBefore.nodes.find((entry) => entry.id === createdArea.node.id)?.note ?? "", "");
+
+    const sessionTwoNoteResponse = await fetch(`${ctx.baseUrl}/api/nodes/${encodeURIComponent(createdArea.node.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: sessionTwo.id,
+        note: sessionTwoNote
+      })
+    });
+    assert.equal(sessionTwoNoteResponse.status, 200);
+
+    const sessionTwoGraphAfterResponse = await fetch(`${ctx.baseUrl}/api/graph/${encodeURIComponent(sessionTwo.id)}`);
+    const sessionTwoGraphAfter = await sessionTwoGraphAfterResponse.json();
+    assert.equal(sessionTwoGraphAfter.nodes.find((entry) => entry.id === createdArea.node.id)?.note, sessionTwoNote);
+
+    const clearResponse = await fetch(`${ctx.baseUrl}/api/nodes/${encodeURIComponent(createdArea.node.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: sessionOne.id,
+        note: "   "
+      })
+    });
+    const clearPayload = await clearResponse.json();
+    assert.equal(clearResponse.status, 200);
+    assert.equal(clearPayload.node.note, "");
+    assert.equal(clearPayload.node.hasNote, false);
+    assert.equal(clearPayload.node.history.some((event) => event.summary === "Cleared the note."), true);
+
+    const finalSessionOneGraph = await (await fetch(`${ctx.baseUrl}/api/graph/${encodeURIComponent(sessionOne.id)}`)).json();
+    const finalSessionTwoGraph = await (await fetch(`${ctx.baseUrl}/api/graph/${encodeURIComponent(sessionTwo.id)}`)).json();
+    assert.equal(finalSessionOneGraph.nodes.find((entry) => entry.id === createdArea.node.id)?.note ?? "", "");
+    assert.equal(finalSessionTwoGraph.nodes.find((entry) => entry.id === createdArea.node.id)?.note, sessionTwoNote);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("PATCH /api/nodes/:id rejects notes above the supported size limit", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const { session, nodes } = await createSessionWithManualNodes(ctx, "Large note map", [
+      { type: "concept", label: "retry queues" }
+    ]);
+
+    const response = await fetch(`${ctx.baseUrl}/api/nodes/${encodeURIComponent(nodes[0].id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        note: "a".repeat(20001)
+      })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.match(body.error, /note must be 20000 characters or fewer/i);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("POST /api/nodes reuses one semantic node across roles and PATCH /api/nodes/:id can edit the role set", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionResponse = await fetch(`${ctx.baseUrl}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: "Political theory map" })
+    });
+    const session = await sessionResponse.json();
+
+    const domainResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "domain",
+        label: "political science"
+      })
+    });
+    const createdDomain = await domainResponse.json();
+    assert.equal(domainResponse.status, 200);
+    assert.equal(createdDomain.node.type, "domain");
+    assert.deepEqual(createdDomain.node.roles, ["domain"]);
+
+    const skillResponse = await fetch(`${ctx.baseUrl}/api/nodes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        type: "skill",
+        label: "political science"
+      })
+    });
+    const createdSkill = await skillResponse.json();
+
+    assert.equal(skillResponse.status, 200);
+    assert.equal(createdSkill.node.id, createdDomain.node.id);
+    assert.equal(createdSkill.node.type, "domain");
+    assert.equal(createdSkill.node.primaryRole, "domain");
+    assert.deepEqual(createdSkill.node.secondaryRoles, ["skill"]);
+    assert.deepEqual(createdSkill.node.roles, ["domain", "skill"]);
+    assert.equal(createdSkill.graph.nodes.filter((node) => node.label === "political science").length, 1);
+
+    const updateResponse = await fetch(`${ctx.baseUrl}/api/nodes/${encodeURIComponent(createdDomain.node.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: session.id,
+        primaryRole: "skill",
+        secondaryRoles: ["domain"]
+      })
+    });
+    const updated = await updateResponse.json();
+
+    assert.equal(updateResponse.status, 200);
+    assert.equal(updated.node.id, createdDomain.node.id);
+    assert.equal(updated.node.type, "skill");
+    assert.equal(updated.node.primaryRole, "skill");
+    assert.deepEqual(updated.node.secondaryRoles, ["domain"]);
+    assert.deepEqual(updated.node.roles, ["skill", "domain"]);
+    assert.equal(updated.graph.nodes.filter((node) => node.label === "political science").length, 1);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test("POST /api/refine renames, merges, and cleans weak edges conservatively", async () => {
   const ctx = await startTestServer();
 
@@ -1846,7 +2267,7 @@ test("POST /api/refine renames, merges, and cleans weak edges conservatively", a
     assert.equal(refined.ok, true);
     assert.equal(refined.applied.renamed, 1);
     assert.equal(refined.applied.merged, 1);
-    assert.equal(refined.applied.removedEdges, 1);
+    assert.equal(refined.applied.removedEdges, 0);
     assert.equal(refined.graph.nodes.some((node) => node.id === brokerNode.id && node.label === "message broker"), true);
     assert.equal(refined.graph.nodes.some((node) => node.id === queueNode.id), false);
   } finally {
@@ -2029,6 +2450,8 @@ test("POST /api/demo-session creates a ready-to-explore map with health and stud
     const graph = await graphResponse.json();
 
     assert.equal(graphResponse.status, 200);
+    assert.ok(graph.nodes.some((node) => node.type === "area" && node.label === "technology"));
+    assert.ok(graph.nodes.some((node) => node.type === "topic" && node.label === "asynchronous messaging"));
     assert.ok(graph.nodes.some((node) => node.label === "event producer"));
     assert.equal(graph.artifacts.length, 3);
     assert.ok(graph.health.score > 0);
@@ -2254,6 +2677,198 @@ test("local production controls support backup, restore, node edits, merges, and
     assert.equal(restoredGraph.nodes.some((node) => node.label === "consumer lag monitoring"), true);
     assert.equal(restoredGraph.nodes.some((node) => node.label === "schema versioning"), false);
     assert.equal(restoredGraph.artifacts.length, 2);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("POST /api/restore collapses exact semantic duplicates across roles", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionId = "session:semantic-role-cleanup";
+    const goalId = "goal:semantic-role-cleanup";
+    const backup = {
+      app: "MindWeaver",
+      data: {
+        sessions: [
+          {
+            id: sessionId,
+            goal: "Political theory map",
+            createdAt: Date.now()
+          }
+        ],
+        goals: [
+          {
+            id: goalId,
+            sessionId,
+            title: "Political theory map",
+            createdAt: Date.now()
+          }
+        ],
+        nodes: [
+          {
+            id: `session:${sessionId}`,
+            label: "Learning Session",
+            type: "root",
+            createdAt: Date.now(),
+            sessionIds: [sessionId],
+            sessionReviews: {},
+            aliases: [],
+            history: []
+          },
+          {
+            id: goalId,
+            label: "Political theory map",
+            type: "goal",
+            createdAt: Date.now(),
+            sessionIds: [sessionId],
+            sessionReviews: {},
+            aliases: [],
+            history: []
+          },
+          {
+            id: "domain:political-science",
+            label: "political science",
+            canonicalLabel: "political science",
+            type: "domain",
+            createdAt: Date.now(),
+            sessionIds: [sessionId],
+            sessionReviews: {},
+            aliases: [],
+            history: [],
+            confidence: 0.86
+          },
+          {
+            id: "skill:political-science",
+            label: "political science",
+            canonicalLabel: "political science",
+            type: "skill",
+            createdAt: Date.now() + 1,
+            sessionIds: [sessionId],
+            sessionReviews: {},
+            aliases: [],
+            history: [],
+            confidence: 0.72
+          }
+        ],
+        edges: [
+          {
+            key: `session:${sessionId}__pursues__${goalId}`,
+            source: `session:${sessionId}`,
+            target: goalId,
+            label: "pursues",
+            type: "pursues",
+            createdAt: Date.now(),
+            sessionIds: [sessionId],
+            sessionReviews: {}
+          },
+          {
+            key: `${goalId}__focuses_on__domain:political-science`,
+            source: goalId,
+            target: "domain:political-science",
+            label: "focuses_on",
+            type: "focuses_on",
+            createdAt: Date.now(),
+            sessionIds: [sessionId],
+            sessionReviews: {}
+          },
+          {
+            key: "domain:political-science__contains__skill:political-science",
+            source: "domain:political-science",
+            target: "skill:political-science",
+            label: "contains",
+            type: "contains",
+            createdAt: Date.now(),
+            sessionIds: [sessionId],
+            sessionReviews: {}
+          }
+        ],
+        preferences: {
+          activeSessionId: sessionId,
+          lastSessionId: sessionId
+        }
+      }
+    };
+
+    const restoreResponse = await fetch(`${ctx.baseUrl}/api/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        confirm: true,
+        backup
+      })
+    });
+    const restore = await restoreResponse.json();
+    assert.equal(restoreResponse.status, 200);
+    assert.equal(restore.ok, true);
+
+    const graphResponse = await fetch(`${ctx.baseUrl}/api/graph/${encodeURIComponent(sessionId)}`);
+    const graph = await graphResponse.json();
+    assert.equal(graphResponse.status, 200);
+
+    const politicalScienceNodes = graph.nodes.filter((node) => node.label === "political science");
+    assert.equal(politicalScienceNodes.length, 1);
+    assert.equal(politicalScienceNodes[0].type, "domain");
+    assert.equal(politicalScienceNodes[0].primaryRole, "domain");
+    assert.deepEqual(politicalScienceNodes[0].secondaryRoles, ["skill"]);
+    assert.equal(graph.edges.some((edge) => edge.source === edge.target), false);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("POST /api/intersect bridges two selected nodes", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const { nodes } = await createSessionWithManualNodes(ctx, "Bridge map", [
+      { type: "domain", label: "Political Science" },
+      { type: "skill", label: "International Relations" }
+    ]);
+
+    const intersectResponse = await fetch(`${ctx.baseUrl}/api/intersect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nodeId1: nodes[0].id,
+        nodeId2: nodes[1].id
+      })
+    });
+    const intersection = await intersectResponse.json();
+
+    assert.equal(intersectResponse.status, 200);
+    assert.deepEqual(intersection.nodeIds, [nodes[0].id, nodes[1].id]);
+    assert.deepEqual(intersection.bridge_concepts, ["idempotency"]);
+    assert.match(intersection.reasoning, /Idempotency connects retries to safe consumer behavior\./);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("POST /api/intersect accepts nodeIds arrays for multi-select bridges", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const { nodes } = await createSessionWithManualNodes(ctx, "Geopolitics map", [
+      { type: "domain", label: "Political Science" },
+      { type: "skill", label: "International Relations" },
+      { type: "concept", label: "Geography" }
+    ]);
+
+    const intersectResponse = await fetch(`${ctx.baseUrl}/api/intersect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nodeIds: nodes.map((node) => node.id)
+      })
+    });
+    const intersection = await intersectResponse.json();
+
+    assert.equal(intersectResponse.status, 200);
+    assert.deepEqual(intersection.nodeIds, nodes.map((node) => node.id));
+    assert.deepEqual(intersection.bridge_concepts, ["idempotency"]);
+    assert.match(intersection.reasoning, /Idempotency connects retries to safe consumer behavior\./);
   } finally {
     await ctx.close();
   }

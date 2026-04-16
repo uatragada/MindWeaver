@@ -90,6 +90,7 @@ temp/
 *.sqlite
 *.sqlite3
 *.mindweaver-backup.json
+output/
 
 # Logs
 *.log

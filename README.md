@@ -224,7 +224,7 @@ The extension is explicit by default and can switch into a user-enabled continuo
 - it can automatically save newly visited pages only while that toggle is on
 - it sends data only to your local MindWeaver server
 
-The popup destination list mirrors the currently open map tabs in the web UI, page saves are processed in order if another save is already running, and `Continuous Save` follows the currently active destination map. If the graph is already open, use the in-canvas `Refresh map` button after external saves because the workspace no longer auto-polls.
+The popup destination list mirrors the currently open map tabs in the web UI, page saves are processed in order if another save is already running, and `Continuous Save` follows the currently active destination map. Continuous saves are also queued in the extension so fast navigation can still stack pending captures. If the graph is already open, use the in-canvas `Refresh map` button after external saves because the workspace no longer auto-polls.
 
 ## What Works Today
 

@@ -51,7 +51,7 @@ export function getChatHistoryImportPreview(rawValue) {
     };
     const warnings = [];
     const allowedProviders = new Set(["chatgpt", "claude", "other"]);
-    const allowedNodeTypes = new Set(["domain", "skill", "concept"]);
+    const allowedNodeTypes = new Set(["area", "domain", "topic", "skill", "concept"]);
     const allowedRelationshipTypes = new Set(["contains", "builds_on", "prerequisite", "related", "contrasts", "supports", "needs", "focuses_on"]);
     const labelSet = new Set();
     let validNodeCount = 0;

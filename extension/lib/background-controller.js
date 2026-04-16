@@ -3,6 +3,7 @@ import { createMindWeaverClient } from "./mindweaver-client.js";
 const CAPTURE_CONTENT_LIMIT_STORAGE_KEY = "mindweaverCaptureContentLimitChars";
 const AUTO_CAPTURE_ENABLED_STORAGE_KEY = "mindweaverAutoCaptureEnabled";
 const DEFAULT_CAPTURE_CONTENT_LIMIT = 16000;
+const AUTO_CAPTURE_HISTORY_SETTLE_MS = 700;
 
 function createBackgroundController({
   chromeApi = chrome,
@@ -10,7 +11,10 @@ function createBackgroundController({
   now = () => Date.now()
 } = {}) {
   const pendingAutoCaptures = new Set();
+  const scheduledHistoryCaptures = new Map();
   const lastAutoCapturedUrlByTabId = new Map();
+  const queuedCaptureRequests = [];
+  let isProcessingQueuedCaptures = false;
 
   function normalizeCaptureContentLimit(healthPayload) {
     const limit = Number(healthPayload?.contentLimitChars);
@@ -51,10 +55,15 @@ function createBackgroundController({
     });
   }
 
-  async function sendToMindWeaver(payload) {
-    const targetState = await client.fetchJson("/api/session-target?limit=24");
-    const sessionId = targetState.activeSessionId;
-    const targetLabel = String(targetState.activeSession?.goal ?? "").trim() || "Untitled map";
+  async function getTargetState() {
+    return await client.fetchJson("/api/session-target?limit=24");
+  }
+
+  async function sendToMindWeaver(payload, { targetState = null } = {}) {
+    const resolvedTargetState = targetState ?? await getTargetState();
+    const targetStatePayload = resolvedTargetState ?? {};
+    const sessionId = targetStatePayload.activeSessionId;
+    const targetLabel = String(targetStatePayload.activeSession?.goal ?? "").trim() || "Untitled map";
 
     if (!sessionId) {
       await setCaptureStatus({
@@ -80,20 +89,64 @@ function createBackgroundController({
       targetId: sessionId
     });
 
-    return { ok: true, status, body, target: targetState.activeSession };
+    return { ok: true, status, body, target: targetStatePayload.activeSession };
   }
 
-  async function resolveTab(tabId = null) {
-    if (Number.isInteger(tabId) && tabId > 0 && typeof chromeApi.tabs.get === "function") {
-      return await chromeApi.tabs.get(tabId);
+  async function processQueuedCaptures() {
+    if (isProcessingQueuedCaptures) return;
+    isProcessingQueuedCaptures = true;
+
+    while (queuedCaptureRequests.length) {
+      const nextRequest = queuedCaptureRequests.shift();
+      if (!nextRequest) continue;
+
+      try {
+        const result = await sendToMindWeaver(nextRequest.payload, { targetState: nextRequest.targetState });
+        nextRequest.resolve(result);
+      } catch (error) {
+        await setCaptureStatus({
+          status: "error",
+          title: nextRequest.payload?.title || nextRequest.payload?.url,
+          message: "Could not save a queued page."
+        });
+        nextRequest.reject(error);
+      }
     }
 
-    const [tab] = await chromeApi.tabs.query({ active: true, currentWindow: true });
-    return tab ?? null;
+    isProcessingQueuedCaptures = false;
   }
 
-  async function captureTab(tabId = null) {
-    const tab = await resolveTab(tabId);
+  async function queueCaptureRequest(payload, { targetState = null, queuedReason = "" } = {}) {
+    const resolvedTargetState = targetState ?? await getTargetState();
+    if (!resolvedTargetState?.activeSessionId) {
+      return await sendToMindWeaver(payload, { targetState: resolvedTargetState });
+    }
+
+    const targetLabel = String(resolvedTargetState?.activeSession?.goal ?? "").trim() || "Untitled map";
+    const targetId = String(resolvedTargetState?.activeSessionId ?? "").trim();
+    const queueDepth = queuedCaptureRequests.length + (isProcessingQueuedCaptures ? 1 : 0) + 1;
+
+    await setCaptureStatus({
+      status: "queued",
+      title: payload.title || payload.url,
+      message: queuedReason || `Queued for ${targetLabel}. ${queueDepth > 1 ? `${queueDepth} saves waiting.` : "Waiting to send."}`,
+      targetLabel,
+      targetId
+    });
+
+    return await new Promise((resolve, reject) => {
+      queuedCaptureRequests.push({
+        payload,
+        targetState: resolvedTargetState,
+        resolve,
+        reject
+      });
+      void processQueuedCaptures();
+    });
+  }
+
+  async function extractTabPayload(tabId = null, { fallbackTab = null } = {}) {
+    const tab = fallbackTab ?? await resolveTab(tabId);
     if (!tab?.id) {
       await setCaptureStatus({ status: "error", message: "No active tab found." });
       return { ok: false, error: "No active tab found." };
@@ -115,10 +168,31 @@ function createBackgroundController({
       return { ok: false, skipped: true, reason: extracted?.reason || "MindWeaver could not read this page." };
     }
 
-    return await sendToMindWeaver(extracted.payload);
+    return {
+      ok: true,
+      tab,
+      payload: extracted.payload
+    };
   }
 
-  async function maybeAutoCaptureTab(tab) {
+  async function resolveTab(tabId = null) {
+    if (Number.isInteger(tabId) && tabId > 0 && typeof chromeApi.tabs.get === "function") {
+      return await chromeApi.tabs.get(tabId);
+    }
+
+    const [tab] = await chromeApi.tabs.query({ active: true, currentWindow: true });
+    return tab ?? null;
+  }
+
+  async function captureTab(tabId = null) {
+    const extraction = await extractTabPayload(tabId);
+    if (!extraction.ok) return extraction;
+    return await queueCaptureRequest(extraction.payload, {
+      queuedReason: "Queued for save to the active map."
+    });
+  }
+
+  async function maybeAutoCaptureTab(tab, { queuedReason = "" } = {}) {
     if (!isAutomaticallyCapturableTab(tab)) return { ok: false, skipped: true, reason: "Tab is not auto-capturable." };
     if (!await isAutoCaptureEnabled()) return { ok: false, skipped: true, reason: "Auto-save is disabled." };
 
@@ -129,10 +203,20 @@ function createBackgroundController({
 
     pendingAutoCaptures.add(navigationKey);
     try {
-      const result = await captureTab(tab.id);
-      if (result?.ok || result?.skipped) {
-        lastAutoCapturedUrlByTabId.set(tab.id, tab.url);
+      const extraction = await extractTabPayload(tab.id, { fallbackTab: tab });
+      if (!extraction.ok) {
+        if (extraction.skipped) {
+          lastAutoCapturedUrlByTabId.set(tab.id, tab.url);
+        }
+        return extraction;
       }
+
+      lastAutoCapturedUrlByTabId.set(tab.id, tab.url);
+      const targetState = await getTargetState();
+      const result = await queueCaptureRequest(extraction.payload, {
+        targetState,
+        queuedReason: queuedReason || "Queued automatically after page navigation."
+      });
       return result;
     } catch (error) {
       await setCaptureStatus({
@@ -149,6 +233,30 @@ function createBackgroundController({
   function handleTabUpdated(tabId, changeInfo, tab) {
     if (changeInfo?.status !== "complete") return;
     void maybeAutoCaptureTab({ ...tab, id: tab?.id ?? tabId });
+  }
+
+  function scheduleHistoryStateCapture(tabId, url) {
+    const numericTabId = Number(tabId);
+    if (!Number.isInteger(numericTabId) || numericTabId <= 0) return;
+
+    const existingTimer = scheduledHistoryCaptures.get(numericTabId);
+    if (existingTimer) clearTimeout(existingTimer);
+
+    const timerId = setTimeout(() => {
+      scheduledHistoryCaptures.delete(numericTabId);
+      resolveTab(numericTabId)
+        .then((tab) => maybeAutoCaptureTab(tab ? { ...tab, url: url || tab.url } : null, {
+          queuedReason: "Queued automatically after in-app navigation."
+        }))
+        .catch(() => undefined);
+    }, AUTO_CAPTURE_HISTORY_SETTLE_MS);
+
+    scheduledHistoryCaptures.set(numericTabId, timerId);
+  }
+
+  function handleHistoryStateUpdated(details) {
+    if (Number(details?.frameId) !== 0) return;
+    scheduleHistoryStateCapture(details?.tabId, details?.url);
   }
 
   function handleTabActivated(activeInfo) {
@@ -208,16 +316,20 @@ function createBackgroundController({
     chromeApi.runtime.onMessage.addListener(handleRuntimeMessage);
     chromeApi.tabs.onUpdated.addListener(handleTabUpdated);
     chromeApi.tabs.onActivated.addListener(handleTabActivated);
+    chromeApi.webNavigation?.onHistoryStateUpdated?.addListener(handleHistoryStateUpdated);
   }
 
   return {
     captureActiveTab: () => captureTab(),
     captureTab,
+    extractTabPayload,
     handleContextMenuClick,
+    handleHistoryStateUpdated,
     handleRuntimeMessage,
     handleTabActivated,
     handleTabUpdated,
     maybeAutoCaptureTab,
+    queueCaptureRequest,
     register,
     sendToMindWeaver,
     setCaptureStatus
