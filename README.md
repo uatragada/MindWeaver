@@ -206,7 +206,6 @@ Good local-only workflows:
 - dump saved reading notes as Markdown
 - add repo docs or architecture notes before a project deep dive
 
-If you are sharing the repo publicly, this is the easiest path to recommend.
 
 ## Use It With The Chrome Extension
 
