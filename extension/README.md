@@ -11,6 +11,7 @@ The Chrome extension is the browser capture surface for MindWeaver. It supports 
 - `Continuous Save` is a green on/off toggle that snapshots each newly visited page while it is enabled, queues those saves in the extension, and sends them to MindWeaver one after another.
 - `Save selection to MindWeaver` in the right-click menu saves highlighted text as evidence.
 - `Open MindWeaver` opens the active map in the reachable local app surface, or the last-used map if capture is currently idle.
+- Captured pages and highlights can then be reviewed, merged, and annotated with Markdown node notes inside the MindWeaver inspector.
 
 ## Privacy Model
 

@@ -119,7 +119,7 @@ Chat-history import body:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/graph/:sessionId` | Returns session-scoped nodes, edges, artifacts, review queue, recommendations, health, and study plan. |
+| `GET` | `/api/graph/:sessionId` | Returns session-scoped nodes, edges, artifacts, review queue, recommendations, health, and study plan, including note metadata for visible nodes. |
 | `GET` | `/api/review/:sessionId` | Returns the current review queue. |
 | `GET` | `/api/recommendations/:sessionId` | Returns next-step recommendations. |
 | `GET` | `/api/progress/:sessionId` | Returns session and long-term progress summaries. |
@@ -132,7 +132,7 @@ Chat-history import body:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/nodes/:id/review` | Approves or rejects a node for a session. |
-| `PATCH` | `/api/nodes/:id` | Edits a node label, description, summary, or mastery state. |
+| `PATCH` | `/api/nodes/:id` | Edits a node label, description, summary, semantic roles, mastery state, and the session-scoped Markdown note. |
 | `POST` | `/api/nodes/:id/merge` | Merges the source node into a target node for the session. |
 | `POST` | `/api/edges` | Adds a manual relationship between two nodes. |
 | `POST` | `/api/edges/:key/review` | Approves or rejects a graph edge for a session. |
@@ -158,9 +158,14 @@ Node edit body:
   "label": "consumer lag monitoring",
   "description": "Tracks delayed consumers.",
   "summary": "Use consumer lag to notice when downstream systems fall behind.",
+  "note": "# Investigation notes\n\n- Review lag thresholds\n- Compare partitions",
+  "primaryRole": "skill",
+  "secondaryRoles": ["domain"],
   "masteryState": "verified"
 }
 ```
+
+`note` is session-scoped, supports Markdown, and is limited to 20,000 characters. Graph payloads and exports include `note`, `hasNote`, `noteCreatedAt`, and `noteUpdatedAt` for visible nodes in that session.
 
 Merge body:
 

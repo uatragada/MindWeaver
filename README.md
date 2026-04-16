@@ -7,6 +7,7 @@
 - Run AI-backed classification and cleanup with OpenAI or a local Ollama model.
 - Keep provenance visible so every concept can be traced back to source material.
 - Review noisy AI output instead of trusting it blindly.
+- Attach session-scoped Markdown notes to nodes and expand them into a fullscreen note editor.
 - Run gap analysis, study plans, quiz loops, and source-grounded graph chat.
 - Export maps as Markdown, JSON, or full local backups.
 
@@ -150,6 +151,7 @@ Use it to:
 
 - search nodes
 - filter by type
+- navigate with the minimap, branch focus, and path-to-root tools
 - refresh the canvas manually after extension saves or other external updates
 - inspect one concept at a time
 - merge duplicates
@@ -162,6 +164,8 @@ The `Inspector` lets you:
 
 - rename nodes
 - write your own explanation
+- add session-scoped Markdown notes with write/preview and fullscreen editing
+- adjust semantic roles when one node plays more than one role in the map
 - change mastery state
 - merge duplicates
 - review edge quality
@@ -229,10 +233,10 @@ The popup destination list mirrors the currently open map tabs in the web UI, pa
 - local session creation
 - demo maps for quick exploration
 - graph browsing and node inspection
-- color-coded graph hierarchy with manual refresh and improved spacing
+- color-coded graph hierarchy with a minimap, branch focus controls, manual refresh, and improved spacing
 - manual imports and bulk Markdown import
 - local Ollama mode with higher 128k source limits
-- source-backed node editing and review
+- source-backed node editing, Markdown node notes, and review
 - automatic exact-label dedupe after imports, edits, and refine
 - shared extension and web-app map targeting
 - queued page saves from the extension
@@ -278,6 +282,7 @@ npm run build        # build the web app
 npm run start        # start the production-style Express server
 npm run test         # run backend tests
 npm run check        # backend, frontend, extension unit tests + build
+npm run test:extension:integration  # browser extension integration flow
 npm run eval:fixtures
 ```
 
@@ -285,9 +290,12 @@ npm run eval:fixtures
 
 - [`web/`](web): Vite + React graph UI
 - [`web/src/components/`](web/src/components): extracted UI panels and controls
+- [`web/src/components/graph/`](web/src/components/graph): graph-specific workspace components such as the minimap
+- [`web/src/components/notes/`](web/src/components/notes): Markdown note rendering helpers
 - [`web/src/hooks/`](web/src/hooks): reusable React hooks for routing and persisted UI state
-- [`web/src/lib/`](web/src/lib): frontend constants, formatting helpers, graph rendering logic, and import parsing
+- [`web/src/lib/`](web/src/lib): frontend constants, formatting helpers, graph rendering logic, graph traversal helpers, and import parsing
 - [`server/`](server): Express API, persistence, and AI-backed learning endpoints
+- [`server/services/`](server/services): extracted graph, import, refine, learning, and shared server logic
 - [`extension/`](extension/README.md): Chrome extension for saving pages and highlights
 - [`docs/`](docs/README.md): architecture, API, development, product, and security docs
 - [`scripts/`](scripts): local development helpers

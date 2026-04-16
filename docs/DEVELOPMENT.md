@@ -85,9 +85,16 @@ npm run eval:fixtures
 The web app is now split into a few clear layers instead of keeping all helper logic inside `web/src/App.jsx`:
 
 - `web/src/components/`: presentational UI slices and shared controls
+- `web/src/components/graph/`: graph-only workspace widgets such as the minimap
+- `web/src/components/notes/`: Markdown note rendering helpers
 - `web/src/hooks/`: reusable hooks for route state and local storage
-- `web/src/lib/`: pure helpers, constants, graph rendering helpers, and import parsing
+- `web/src/lib/`: pure helpers, constants, graph rendering helpers, graph traversal/layout helpers, and import parsing
 - `web/src/App.jsx`: top-level workspace coordination and API-driven flows
+
+The server follows a similar split:
+
+- `server/app.js`: route wiring
+- `server/services/`: extracted graph, import, refine, learning, and shared business logic
 
 When refactoring, prefer moving pure logic into `lib/` first, then extracting stable UI sections into `components/`.
 
@@ -138,7 +145,8 @@ npm run eval:fixtures
 4. Check `http://127.0.0.1:3001/api/health`.
 5. Create or open a map.
 6. Save a page from the extension.
-7. Confirm the graph updates.
+7. Confirm the graph updates after using the in-canvas `Refresh map` button.
+8. Select a node, open the inspector note editor, and verify Markdown note write/preview/fullscreen flows still work.
 
 ## Git Hygiene
 

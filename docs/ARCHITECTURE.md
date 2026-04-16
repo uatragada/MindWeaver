@@ -32,9 +32,14 @@ The extension is an explicit save surface, not a continuous browsing tracker.
 The server owns persistence, graph mutations, AI calls, and production static serving.
 
 - `server/index.js` loads `.env.local`, initializes the database, builds the AI clients, and starts Express.
-- `server/app.js` defines all API routes and most product logic.
+- `server/app.js` defines the API routes and delegates most graph and learning behavior to extracted services.
 - `server/db.js` defines the default LowDB data shape and initializes the local JSON file.
 - `server/openai.js` wraps OpenAI and Ollama calls with timeouts, structured-output validation, and provider-specific request shaping.
+- `server/services/shared-service.js` holds shared constants and low-level graph/session helpers.
+- `server/services/graph-service.js` owns node serialization, exports, notes, graph summaries, and session graph composition.
+- `server/services/import-service.js` owns ingest/import parsing, artifact handling, and chat-history import logic.
+- `server/services/refine-service.js` owns graph cleanup, dedupe, and refine flows.
+- `server/services/learning-service.js` owns gap analysis, quiz, summary, chat, and explanation helpers.
 
 ### Web
 
@@ -42,8 +47,10 @@ The web app is a Vite + React UI for map exploration and cleanup.
 
 - `web/src/App.jsx` now acts as the top-level workspace orchestrator for data loading, graph interactions, manual refresh, and panel state.
 - `web/src/components/` holds extracted UI building blocks such as map panels and shared controls.
+- `web/src/components/graph/` holds graph-only UI such as the minimap.
+- `web/src/components/notes/` holds Markdown note rendering helpers used by the inspector.
 - `web/src/hooks/` holds reusable browser-state hooks such as local-storage persistence and session-route syncing.
-- `web/src/lib/` holds frontend constants, formatting helpers, graph rendering helpers, and chat-import preview parsing.
+- `web/src/lib/` holds frontend constants, formatting helpers, graph rendering helpers, graph traversal/layout helpers, and chat-import preview parsing.
 - `web/src/app.css` contains the shared app styling.
 - `web/src/ErrorBoundary.jsx` prevents React render failures from blanking the whole app.
 
@@ -65,6 +72,7 @@ Core collections:
 - `sessions`: learning maps and session metadata.
 - `goals`: explicit learning goals for sessions.
 - `nodes`: graph nodes such as `goal`, `domain`, `skill`, and `concept`.
+- `nodes.sessionNotes`: per-session Markdown notes attached to nodes and surfaced in the inspector/export flows.
 - `edges`: graph relationships such as `contains`, `builds_on`, `related`, `prerequisite`, `supports`, `contrasts`, and `needs`.
 - `artifacts`: saved pages, notes, transcripts, highlights, and imported text sources.
 - `verifications`: quiz/review outcomes.
@@ -93,6 +101,7 @@ MindWeaver is useful because capture, graph cleanup, and review all feed one ano
 - Gap analysis creates missing-concept nodes and next actions.
 - Quizzes update confidence and review scheduling.
 - Cleanup actions, such as merge and prune, make the map more trustworthy.
+- Session-scoped Markdown notes let users preserve interpretation without pretending that personal notes are source evidence.
 - Exports and backups preserve the local learning record.
 
 ## Production Boundary

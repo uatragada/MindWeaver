@@ -46,7 +46,7 @@ Out of current scope:
 2. Save useful pages or highlights from the extension.
 3. Import notes, transcripts, PDFs, Markdown, docs, or repo excerpts when needed.
 4. Review the generated concepts and relationships in the color-coded graph workspace.
-5. Clean up duplicates and weak evidence, while letting exact-label dedupe collapse repeated saves and edits automatically.
+5. Clean up duplicates, weak evidence, and add session-scoped Markdown notes in the inspector, while letting exact-label dedupe collapse repeated saves and edits automatically.
 6. Use gap analysis to find missing concepts.
 7. Generate quizzes to update confidence.
 8. Ask the graph assistant source-grounded questions.
@@ -62,7 +62,7 @@ Out of current scope:
 - Shared active-map targeting between the web app and extension.
 - FIFO page-save queue for extension captures.
 - Conservative exact-label dedupe after imports, edits, and refine passes.
-- Node editing and duplicate merging.
+- Node editing, semantic-role cleanup, duplicate merging, and session-scoped Markdown notes.
 - Source removal.
 - Local backup/restore.
 
