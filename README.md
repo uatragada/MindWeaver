@@ -12,13 +12,11 @@
 
 ## What It Looks Like
 
-| Graph workspace | Inspector and cleanup |
-| --- | --- |
-| ![MindWeaver graph workspace](docs/screenshots/mindweaver-graph.png) | ![MindWeaver inspector workspace](docs/screenshots/mindweaver-inspector.png) |
 
-| Import workflow |
-| --- |
-| ![MindWeaver import workspace](docs/screenshots/mindweaver-import.png) |
+| Graph workspace | Extension |
+| --- | --- |
+| ![Graph workspace](https://github.com/user-attachments/assets/be254e05-a609-46b9-93d0-ca3389bd0859) | ![Extension](https://github.com/user-attachments/assets/f20d6164-02a7-4eaa-a132-d3172a42180d) |
+
 
 ## Quick Start
 
