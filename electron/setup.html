@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MindWeaver Setup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050505;
+      --panel: rgba(12, 12, 12, 0.96);
+      --panel-strong: rgba(18, 18, 18, 0.98);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #f4f4f4;
+      --muted: #9b9b9b;
+      --accent: rgba(255, 255, 255, 0.14);
+      --radius: 10px;
+      --shadow: 0 22px 56px rgba(0, 0, 0, 0.42);
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: radial-gradient(circle at top, rgba(140, 182, 255, 0.12), transparent 38%), #050505;
+      color: var(--text);
+      font: 16px/1.55 "Aptos", "Segoe UI", sans-serif;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .shell {
+      width: min(880px, 100%);
+      padding: 24px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 1.8rem; }
+    h2 { font-size: 1.1rem; margin-bottom: 8px; }
+    .muted { color: var(--muted); }
+    .grid {
+      display: grid;
+      gap: 18px;
+      margin-top: 20px;
+    }
+    .card {
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel-strong);
+    }
+    .card p { margin-top: 8px; }
+    label {
+      display: block;
+      margin-top: 12px;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    input {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      font: inherit;
+    }
+    input:focus {
+      outline: 2px solid rgba(255, 255, 255, 0.28);
+      border-color: rgba(255, 255, 255, 0.34);
+    }
+    code {
+      display: block;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.24);
+      color: #d9f1ff;
+      overflow-wrap: anywhere;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 0.9rem;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    button {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary {
+      background: rgba(255, 255, 255, 0.16);
+      font-weight: 700;
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+    .status {
+      min-height: 22px;
+      margin-top: 12px;
+      color: var(--muted);
+    }
+    .status.is-error { color: #ffd6d6; }
+    .status.is-success { color: #c9ffd6; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <h1>Finish setting up MindWeaver</h1>
+    <p class="muted">The installer bundled the Chrome extension with this desktop app. Complete this one-time setup to save your OpenAI key and load the extension in Chrome.</p>
+
+    <div class="grid">
+      <section class="card">
+        <h2>OpenAI key</h2>
+        <p class="muted">Enter your OpenAI API key now, or leave it blank if you plan to use Local (Ollama) instead.</p>
+        <label for="openai-key">OPENAI_API_KEY</label>
+        <input id="openai-key" type="password" autocomplete="off" placeholder="sk-..." />
+      </section>
+
+      <section class="card">
+        <h2>Chrome extension</h2>
+        <p class="muted">MindWeaver packaged the unpacked extension here. You can open this folder manually in <strong>chrome://extensions</strong>, or let MindWeaver launch Chrome with it loaded.</p>
+        <code id="extension-path">Loading…</code>
+
+        <label for="chrome-path">Chrome path</label>
+        <input id="chrome-path" type="text" autocomplete="off" placeholder="C:\Program Files\Google\Chrome\Application\chrome.exe" />
+
+        <div class="actions">
+          <button id="launch-chrome" type="button">Launch Chrome with Extension</button>
+          <button id="open-folder" type="button">Open Extension Folder</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="status" class="status" aria-live="polite"></div>
+
+    <div class="actions">
+      <button id="continue" class="primary" type="button">Save and Continue</button>
+      <button id="skip" type="button">Skip Key for Now</button>
+    </div>
+  </main>
+
+  <script>
+    let extensionAvailable = false;
+    const statusEl = document.getElementById("status");
+    const openAiKeyEl = document.getElementById("openai-key");
+    const chromePathEl = document.getElementById("chrome-path");
+    const extensionPathEl = document.getElementById("extension-path");
+    const continueButton = document.getElementById("continue");
+    const skipButton = document.getElementById("skip");
+    const launchChromeButton = document.getElementById("launch-chrome");
+    const openFolderButton = document.getElementById("open-folder");
+
+    function setStatus(message, tone = "") {
+      statusEl.textContent = message || "";
+      statusEl.className = `status${tone ? ` is-${tone}` : ""}`;
+    }
+
+    async function boot() {
+      try {
+        const state = await window.mindWeaverSetup.loadState();
+        extensionAvailable = Boolean(state.extensionAvailable);
+        openAiKeyEl.value = state.openAiKey || "";
+        chromePathEl.value = state.chromePath || "";
+        extensionPathEl.textContent = state.extensionPath || "Unavailable";
+        launchChromeButton.disabled = !extensionAvailable;
+        openFolderButton.disabled = !extensionAvailable;
+        if (!extensionAvailable) {
+          setStatus("The packaged Chrome extension could not be found.", "error");
+        }
+      } catch (error) {
+        setStatus(error.message || String(error), "error");
+      }
+    }
+
+    async function withBusyState(action) {
+      continueButton.disabled = true;
+      skipButton.disabled = true;
+      launchChromeButton.disabled = true;
+      openFolderButton.disabled = true;
+      try {
+        await action();
+      } finally {
+        continueButton.disabled = false;
+        skipButton.disabled = false;
+        launchChromeButton.disabled = !extensionAvailable;
+        openFolderButton.disabled = !extensionAvailable;
+      }
+    }
+
+    continueButton.addEventListener("click", () => withBusyState(async () => {
+      setStatus("Saving setup…");
+      await window.mindWeaverSetup.submit({
+        openAiKey: openAiKeyEl.value.trim()
+      });
+    }));
+
+    skipButton.addEventListener("click", () => withBusyState(async () => {
+      setStatus("Continuing without an OpenAI key…");
+      await window.mindWeaverSetup.submit({
+        openAiKey: ""
+      });
+    }));
+
+    launchChromeButton.addEventListener("click", () => withBusyState(async () => {
+      const result = await window.mindWeaverSetup.launchChrome({
+        chromePath: chromePathEl.value.trim()
+      });
+      chromePathEl.value = result.chromePath || chromePathEl.value;
+      setStatus(result.message, result.ok ? "success" : "error");
+    }));
+
+    openFolderButton.addEventListener("click", () => withBusyState(async () => {
+      const result = await window.mindWeaverSetup.openExtensionFolder();
+      setStatus(result.message, result.ok ? "success" : "error");
+    }));
+
+    boot();
+  </script>
+</body>
+</html>

@@ -30,7 +30,7 @@ import {
   TAB_VIEW_STORAGE_KEY,
   visibleNodeTypes
 } from "./lib/app-constants.js";
-import { getChatHistoryImportPreview } from "./lib/chat-import-preview.js";
+import { extractJsonObjectString, getChatHistoryImportPreview } from "./lib/chat-import-preview.js";
 import {
   drawArrowHead,
   createNodeCollisionForce,

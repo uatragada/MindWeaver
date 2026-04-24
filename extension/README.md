@@ -63,3 +63,5 @@ If the graph is already open when a capture finishes, use the in-canvas `Refresh
 ## Reloading During Development
 
 After changing files in `extension/`, open `chrome://extensions` and click reload on the unpacked MindWeaver extension. Chrome does not automatically pick up these changes.
+
+The packaged Windows desktop installer also ships this unpacked extension with the app. On first launch, the desktop setup window can open that packaged extension folder for manual loading or launch Chrome with the extension already loaded.

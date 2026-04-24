@@ -11,10 +11,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultStaticDir = resolve(__dirname, "../web/dist");
 let envConfigured = false;
 
-function configureEnv() {
+function configureEnv(envPaths = []) {
   if (envConfigured) return;
-  config({ path: resolve(__dirname, ".env.local") });
-  config({ path: resolve(__dirname, ".env") });
+  const pathsToLoad = [
+    ...envPaths,
+    resolve(__dirname, ".env.local"),
+    resolve(__dirname, ".env")
+  ];
+
+  for (const envPath of pathsToLoad) {
+    config({ path: envPath });
+  }
+
   envConfigured = true;
 }
 
@@ -22,9 +30,10 @@ export async function startMindWeaverServer({
   port,
   host,
   staticDir = defaultStaticDir,
-  dataFile
+  dataFile,
+  envPaths = []
 } = {}) {
-  configureEnv();
+  configureEnv(envPaths);
   const resolvedPort = Number(port ?? process.env.PORT ?? 3001);
   const resolvedHost = host ?? process.env.HOST ?? "127.0.0.1";
   const db = createDb(dataFile);

@@ -113,6 +113,12 @@ npm run electron:build
 
 That produces an installer in `release/`.
 
+The Windows installer now also bundles the unpacked Chrome extension into the installed app. On first launch after install, MindWeaver opens a one-time desktop setup window that:
+
+- prompts for `OPENAI_API_KEY` and saves it in the desktop app's user-data `.env.local`
+- shows the packaged extension folder
+- can launch Chrome with the packaged extension already loaded
+
 ## A 5-Minute Tour
 
 ### 1. Start with a map

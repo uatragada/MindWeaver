@@ -1,4 +1,4 @@
-function extractJsonObjectString(rawValue) {
+export function extractJsonObjectString(rawValue) {
   const value = String(rawValue ?? "").trim();
   if (!value) return "";
 

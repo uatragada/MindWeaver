@@ -231,4 +231,4 @@ Chat body:
 
 ## AI Provider Notes
 
-MindWeaver can run AI-backed endpoints with either OpenAI or a local Ollama model. OpenAI-backed routes use the server-side `OPENAI_API_KEY` from `server/.env.local`, while local mode uses the selected Ollama model reported by `GET /api/health`. Classification, quiz generation, gap analysis, chat enrichment, and explanations are most useful when at least one provider is configured.
+MindWeaver can run AI-backed endpoints with either OpenAI or a local Ollama model. OpenAI-backed routes use the server-side `OPENAI_API_KEY` from `server/.env.local` in local development and from the desktop app user-data `.env.local` in packaged Electron installs, while local mode uses the selected Ollama model reported by `GET /api/health`. Classification, quiz generation, gap analysis, chat enrichment, and explanations are most useful when at least one provider is configured.

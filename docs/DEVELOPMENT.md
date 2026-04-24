@@ -24,6 +24,8 @@ copy server\.env.example server\.env.local
 
 Then set `OPENAI_API_KEY` in `server/.env.local`.
 
+For the packaged Windows desktop app, the first launch after install prompts for `OPENAI_API_KEY` and writes it to the desktop app's user-data `.env.local`, so the installed app does not rely on editing files inside the installation directory.
+
 ## Scripts
 
 Run both dev servers:
@@ -107,6 +109,8 @@ When refactoring, prefer moving pure logic into `lib/` first, then extracting st
 5. After changing extension files, reload the unpacked extension in Chrome.
 
 The extension supports one-shot saves and an optional continuous-save toggle for newly visited pages. It still injects extraction through the background worker instead of registering a permanent content script.
+
+The Electron installer also bundles that unpacked extension as a packaged resource for desktop users.
 
 ## Data During Development
 
