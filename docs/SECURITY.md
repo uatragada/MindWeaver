@@ -24,7 +24,13 @@ If a real API key is ever committed, rotate it immediately. Removing it from a l
 
 ## Local Data
 
-Runtime data lives in `server/data.json`. It can include:
+In a source checkout, runtime data lives in `server/data.json` unless `MINDWEAVER_DATA_FILE` points somewhere else. The packaged desktop app and generated MCP launcher use:
+
+```text
+%APPDATA%\MindWeaver\mindweaver-data.json
+```
+
+Runtime data can include:
 
 - map names and optional goal nodes,
 - shared active-map state and open map tabs,
@@ -36,15 +42,15 @@ Runtime data lives in `server/data.json`. It can include:
 - local reports,
 - backups or exportable graph evidence.
 
-`server/data.json` is ignored by Git and should not be published.
+Local data files are ignored by Git and should not be published.
 
 ## Extension Privacy Model
 
 The Chrome extension is manual by default and can be switched into a user-enabled continuous-save mode.
 
 - It does not register a content script across all URLs.
-- It injects `content.js` only after `Save Current Page` or while the user-enabled `Continuous Save` toggle is observing newly visited pages.
-- It saves selected text only after the user chooses the context-menu action.
+- It injects `content.js` only after `Save Current Page` or while your `Continuous Save` toggle is observing newly visited pages.
+- It saves selected text only after you choose the context-menu action.
 - It can automatically save newly visited pages only while `Continuous Save` is enabled.
 - It sends data only to `http://localhost:3001`.
 

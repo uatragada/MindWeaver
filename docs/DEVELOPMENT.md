@@ -114,7 +114,15 @@ The Electron installer also bundles that unpacked extension as a packaged resour
 
 ## Data During Development
 
-The local database is `server/data.json`. It is ignored by Git and can be deleted if you want a clean local state. The server recreates the default structure on startup.
+Source checkouts use `server/data.json` by default. It is ignored by Git and can be deleted if you want a clean local state. The server recreates the default structure on startup.
+
+The packaged desktop app and generated MCP launcher use the shared desktop data file instead:
+
+```text
+%APPDATA%\MindWeaver\mindweaver-data.json
+```
+
+Set `MINDWEAVER_DATA_FILE` when you want development, desktop, and MCP clients to point at a specific graph file.
 
 Do not commit:
 
@@ -149,7 +157,7 @@ npm run eval:fixtures
 4. Check `http://127.0.0.1:3001/api/health`.
 5. Create or open a map.
 6. Save a page from the extension.
-7. Confirm the graph updates after using the in-canvas `Refresh map` button.
+7. Confirm the graph updates after an extension save or external file change.
 8. Select a node, open the inspector note editor, and verify Markdown note write/preview/fullscreen flows still work.
 
 ## Git Hygiene
@@ -171,4 +179,4 @@ The ignored files should include `server/.env.local`, `server/data.json`, `serve
 - If the extension cannot save a page, make sure the API server is running on `http://localhost:3001`.
 - If the extension still behaves like an older version, reload it in `chrome://extensions`.
 - If AI features fail, check `server/.env.local` and restart the server.
-- If the graph looks stale after an extension save or another external update, use the in-canvas `Refresh map` button. The graph no longer auto-polls.
+- If the graph looks stale after an extension save or another external update, switch maps or reload the app. In normal local use, MindWeaver watches the shared graph file and refreshes the active map automatically.

@@ -38,7 +38,7 @@ Out of current scope:
 - AI output should be reviewable and correctable.
 - The graph should become more useful after human review.
 - Recommendations should point to concrete next actions.
-- Local data should stay local unless the user exports or backs it up.
+- Local data should stay local unless you export it or back it up.
 
 ## Main User Flow
 

@@ -1,6 +1,6 @@
 # Architecture
 
-MindWeaver is a local-first app with three runtime pieces: a Chrome extension, an Express API, and a Vite/React web UI.
+MindWeaver is a local-first app with a Chrome extension, an Express API, a Vite/React web UI, an optional Windows desktop shell, and a local MCP server for agent access.
 
 ```mermaid
 flowchart LR
@@ -63,9 +63,23 @@ The frontend is being split toward a clearer pattern:
 
 In development, the web app runs on `http://localhost:5197` and talks to `http://localhost:3001`. In production-style local mode, Express serves `web/dist` from `http://127.0.0.1:3001`.
 
+### Desktop
+
+The Windows desktop app wraps the same local MindWeaver workspace in Electron. It can stay available from the tray after the main window is closed, open quick notes, import clipboard or document text, launch extension setup, and open the Agent Access workspace.
+
+Packaged desktop installs use the shared default graph file:
+
+```text
+%APPDATA%\MindWeaver\mindweaver-data.json
+```
+
+### MCP Server
+
+`server/mcp.js` exposes additive graph tools over stdio so Codex, Claude Code, and other MCP clients can read maps, search concepts, traverse relationships, and add bounded notes or graph structure. The MCP server intentionally avoids destructive graph tools such as delete, prune, and restore.
+
 ## Data Model
 
-LowDB stores local data in `server/data.json`, which is intentionally ignored by Git.
+LowDB stores local data in a JSON file. Local source checkouts use `server/data.json` unless `MINDWEAVER_DATA_FILE` points somewhere else. The packaged desktop app, generated MCP launcher, and default desktop/web flow use `%APPDATA%\MindWeaver\mindweaver-data.json`.
 
 Core collections:
 
@@ -84,13 +98,13 @@ Core collections:
 
 1. A user clicks `Save Current Page` in the extension or turns on `Continuous Save`.
 2. The extension creates a session if needed.
-3. The background worker injects `content.js` into the active tab when the user saves manually, a newly visited page is observed while the toggle is on, or a single-page app changes routes.
+3. The background worker injects `content.js` into the active tab after `Save Current Page`, while `Continuous Save` observes newly visited pages, or when a single-page app changes routes.
 4. The extracted page payload is sent to `POST /api/ingest`.
 5. The server runs page saves through a FIFO queue and dedupes by `sessionId + url`.
 6. The server checks whether the page is worth ingesting, then classifies the source with the selected AI provider and provider-specific content limits.
 7. Structured JSON responses are validated before they are allowed to mutate the graph.
 8. The extension-side capture queue sends saved page payloads one after another, then the server updates nodes, edges, artifact provenance, review state, and recommendations before exact duplicate labels are merged conservatively.
-9. The web app fetches `GET /api/graph/:sessionId` and renders the updated map when the user refreshes the canvas or switches sessions.
+9. The web app fetches `GET /api/graph/:sessionId` and renders the updated map when the canvas loads, the session changes, or the shared graph file changes.
 
 ## Learning Loop
 

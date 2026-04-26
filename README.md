@@ -79,7 +79,7 @@ The browser/server flow and the Windows desktop app now use the same default loc
 5. Open `Import Sources`
 6. Run `Gap Analysis` or `Generate Quiz`
 
-If you just want to kick the tires, the demo map is the best starting point.
+If you want the quickest first look, the demo map is the best starting point.
 
 ## Windows Shortcuts
 
@@ -136,7 +136,7 @@ The Windows installer now also bundles the unpacked Chrome extension into the in
 
 Inside the app, open `Agent Access` to add MindWeaver to Codex automatically or copy ready-to-use Codex or Claude Code MCP configuration. The packaged MCP launcher uses the installed MindWeaver executable as Node, so users do not need a separate Node.js install for agent access.
 
-MindWeaver also stays available in the Windows tray after the main window is closed. The tray menu can reopen the app, create a quick note, import clipboard text, import PDF/Word/PowerPoint/text files into the active map, open Agent Access, open extension setup, or fully quit the background service. See [docs/DESKTOP.md](docs/DESKTOP.md) for the user-facing desktop guide.
+MindWeaver also stays available in the Windows tray after the main window is closed. The tray menu can reopen the app, create a quick note, import clipboard text, import PDF/Word/PowerPoint/text files into the active map, open Agent Access, open extension setup, or fully quit the background service. See [docs/DESKTOP.md](docs/DESKTOP.md) for the desktop guide.
 
 ## A 5-Minute Tour
 
@@ -170,7 +170,7 @@ The import panel supports:
 
 ### 3. Review the graph
 
-The graph is the main character of the product.
+The graph is the center of the workspace.
 
 Use it to:
 
@@ -263,7 +263,7 @@ The extension is explicit by default and can switch into a user-enabled continuo
 - it can automatically save newly visited pages only while that toggle is on
 - it sends data only to your local MindWeaver server
 
-The popup destination list mirrors the currently open map tabs in the web UI, page saves are processed in order if another save is already running, and `Continuous Save` follows the currently active destination map. Continuous saves are also queued in the extension so fast navigation can still stack pending captures. If the graph is already open, use the in-canvas `Refresh map` button after external saves because the workspace no longer auto-polls.
+The popup destination list mirrors the currently open map tabs in the web UI, page saves are processed in order if another save is already running, and `Continuous Save` follows the currently active destination map. Continuous saves are also queued in the extension so fast navigation can still stack pending captures. When the desktop app, MCP server, or extension updates the shared local graph file, MindWeaver refreshes the active map automatically in normal local use.
 
 ## What Works Today
 
@@ -297,7 +297,7 @@ The popup destination list mirrors the currently open map tabs in the web UI, pa
 
 MindWeaver is local-first.
 
-- local runtime data lives in `server/data.json`
+- local runtime data lives in `%APPDATA%\MindWeaver\mindweaver-data.json` by default
 - `.env.local` files and local data are git-ignored
 - OpenAI requests are made from the local server, not the extension UI
 - Local (Ollama) requests also flow through the local server and stay on-device
@@ -343,6 +343,8 @@ npm run eval:fixtures
 - [Development Guide](docs/DEVELOPMENT.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [API Reference](docs/API.md)
+- [Desktop Guide](docs/DESKTOP.md)
+- [MCP Server](docs/MCP.md)
 - [Security And Privacy](docs/SECURITY.md)
 - [Product Notes](docs/PRODUCT.md)
 - [Extension README](extension/README.md)

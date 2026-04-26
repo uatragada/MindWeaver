@@ -16,7 +16,7 @@ The Chrome extension is the browser capture surface for MindWeaver. It supports 
 
 ## Privacy Model
 
-The extension does not register a permanent content script across all sites, but it can automatically capture newly visited pages while the user-enabled `Continuous Save` toggle is on.
+The extension does not register a permanent content script across all sites, but it can automatically capture newly visited pages while your `Continuous Save` toggle is on.
 
 - `manifest.json` does not register a content script across all URLs.
 - `content.js` is injected by the background worker after `Save Current Page`, when `Continuous Save` observes a newly visited page, or when a single-page app changes routes.
@@ -61,7 +61,7 @@ The extension sends saves to `http://localhost:3001`. The popup opens the matchi
 
 Packaged desktop installs register the `mindweaver://` protocol. When the popup cannot reach the local API, click `Open MindWeaver` to start the installed app, then retry capture once setup or startup finishes.
 
-If the graph is already open when a capture finishes, use the in-canvas `Refresh map` button in MindWeaver to pull in the latest changes. The graph view no longer auto-refreshes.
+If the graph is already open when a capture finishes, MindWeaver refreshes the active map automatically in normal local use. If the app looks stale, switch maps or reload the app.
 
 ## Reloading During Development
 

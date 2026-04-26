@@ -51,7 +51,7 @@ Right-click the MindWeaver tray icon to open these actions:
 | Action | What it does |
 | --- | --- |
 | `Open MindWeaver` | Opens or focuses the main app window. |
-| `Create Note` | Opens a small note window where the user chooses a map, defines a node label/type, writes a description and note, and saves it into the graph. MindWeaver attaches the node through its normal hierarchy rules. |
+| `Create Note` | Opens a small note window where you choose a map, define a node label/type, write a description and note, and save it into the graph. MindWeaver attaches the node through its normal hierarchy rules. |
 | `Paste Clipboard Text` | Imports the current clipboard text into the active map as a manual note. |
 | `Import PDF / Office / Text` | Imports `.txt`, `.md`, `.markdown`, `.text`, `.pdf`, `.docx`, and `.pptx` files into the active map after extracting readable text. |
 | `Agent Access` | Opens the app to MCP setup for Codex and Claude Code. |
@@ -94,7 +94,7 @@ MindWeaver includes a local MCP server for coding agents. In the first-run setup
 
 `Add to Codex Config` updates `%USERPROFILE%\.codex\config.toml` by appending or replacing only the managed `mindweaver` MCP server block. Existing Codex settings and other MCP servers are preserved. Restart Codex after using it.
 
-The packaged app creates an MCP launcher in the user's app-data folder:
+The packaged app creates an MCP launcher in your app-data folder:
 
 ```text
 %APPDATA%\MindWeaver\start-mindweaver-mcp.bat
@@ -114,4 +114,4 @@ The tray can directly import:
 - `.docx`
 - `.pptx`
 
-PDF, Word, and PowerPoint imports use local text extraction before sending the content to the active map. If a file cannot be parsed or contains no extractable text, MindWeaver opens the import workspace so the user can finish manually.
+PDF, Word, and PowerPoint imports use local text extraction before sending the content to the active map. If a file cannot be parsed or contains no extractable text, MindWeaver opens the import workspace so you can finish manually.

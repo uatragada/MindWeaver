@@ -60,7 +60,7 @@ On Windows, use the batch wrapper when a client prefers a `.bat` command:
 G:\Projects\MindWeaver\start-mcp.bat
 ```
 
-Packaged desktop builds also generate a launcher in the user's MindWeaver app-data folder:
+Packaged desktop builds also generate a launcher in your MindWeaver app-data folder:
 
 ```text
 %APPDATA%\MindWeaver\start-mindweaver-mcp.bat
@@ -100,7 +100,7 @@ npm --prefix server run mcp
 
 ## Codex Configuration
 
-In the desktop app, open `Agent Access` and choose `Add to Codex Config` to update the user's Codex config file automatically. MindWeaver appends or replaces only its own `mindweaver` MCP section in:
+In the desktop app, open `Agent Access` and choose `Add to Codex Config` to update your Codex config file automatically. MindWeaver appends or replaces only its own `mindweaver` MCP section in:
 
 ```text
 %USERPROFILE%\.codex\config.toml

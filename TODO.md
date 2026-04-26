@@ -8,7 +8,7 @@ MindWeaver should become a personal learning system that:
 
 - saves intentionally chosen pages and highlights from across the web,
 - organizes that material into a trustworthy knowledge graph,
-- measures what the user understands,
+- measures what you understand,
 - recommends what to learn next,
 - and eventually supports team onboarding and shared research.
 
@@ -16,13 +16,13 @@ MindWeaver should become a personal learning system that:
 
 The local-first production version now covers the personal learning graph, learning loop, expanded text/highlight intake, source-grounded graph assistant, progress reporting, exports, full local backup/restore, map health, search, pruning, manual relationships, node cleanup, duplicate merging, source removal, and a production-style single-server run path.
 
-Hosted team/SaaS capabilities are intentionally deferred rather than faked in this local app. The code now includes local user/workspace foundations, but a public multi-user deployment still needs real auth, authorization, encrypted persistence, and operational hosting.
+Hosted team/SaaS capabilities are intentionally deferred until they can be built with the right safety and operational foundations. The code now includes local user/workspace foundations, but a public multi-user deployment still needs real auth, authorization, encrypted persistence, and operational hosting.
 
 ## Current State
 
 Today the repo has:
 
-- a browser extension that saves page data only when the user clicks the popup action or saves a selected highlight,
+- a browser extension that saves page data only when you click the popup action or save a selected highlight,
 - a local Express server that classifies pages into graph nodes using OpenAI,
 - a graph viewer that visualizes nodes and evidence,
 - production safety controls for backup, restore, deletion, and local source cleanup,
@@ -120,7 +120,7 @@ Definition of done:
 
 Outcome: the graph starts powering a real assistant instead of sitting beside one.
 
-- [x] Add chat over the user's graph with source-grounded answers.
+- [x] Add chat over your graph with source-grounded answers.
 - [x] Add node-level "explain this from my current level" responses.
 - [x] Add concept intersection workflows that suggest bridges between domains.
 - [x] Add on-demand learning summaries.
@@ -131,7 +131,7 @@ Outcome: the graph starts powering a real assistant instead of sitting beside on
 Definition of done:
 
 - The assistant uses the graph as memory, not just raw page text.
-- Answers can cite evidence and reflect what the user already knows.
+- Answers can cite evidence and reflect what you already know.
 
 ## Phase 6: Support Team And Org Use Cases
 
