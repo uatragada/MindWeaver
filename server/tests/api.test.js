@@ -1,12 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { createDb, initDb } from "../db.js";
 import { createApp } from "../app.js";
+import { resolveMindWeaverDataFile } from "../data-file.js";
+import { createMindWeaverMcpServer } from "../mcp.js";
 import { requestStructuredJson } from "../openai.js";
+
+const FETCH_FORBIDDEN_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+  101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161,
+  179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563,
+  587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060,
+  5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080
+]);
 
 function createClassificationSchema({ minConcepts = 1, maxConcepts = 8 } = {}) {
   return {
@@ -341,12 +351,22 @@ async function startTestServer(options = {}) {
     db,
     openaiClient: options.openaiClient === undefined ? createMockOpenAI() : options.openaiClient,
     ollamaBaseUrl: options.ollamaBaseUrl,
-    staticDir: options.staticDir ?? null
+    staticDir: options.staticDir ?? null,
+    agentAccess: options.agentAccess ?? null
   });
 
-  const server = createServer(app);
-  await new Promise((resolve) => server.listen(0, resolve));
-  const { port } = server.address();
+  let server = null;
+  let port = null;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    server = createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    port = server.address().port;
+    if (!FETCH_FORBIDDEN_PORTS.has(port)) break;
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    server = null;
+    port = null;
+  }
+  if (!server || !port) throw new Error("Could not allocate a fetch-safe test port.");
   const baseUrl = `http://127.0.0.1:${port}`;
 
   return {
@@ -547,6 +567,231 @@ test("health endpoint allows chrome extension origins to reach the local API", a
     );
   } finally {
     await ctx.close();
+  }
+});
+
+test("agent access endpoint returns MCP client configuration", async () => {
+  const agentAccess = {
+    available: true,
+    transport: "stdio",
+    launcherPath: "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\start-mindweaver-mcp.bat",
+    dataFilePath: "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\mindweaver-data.json",
+    codexConfig: {
+      mcpServers: {
+        mindweaver: {
+          command: "cmd.exe",
+          args: ["/d", "/s", "/c", "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\start-mindweaver-mcp.bat"],
+          env: {
+            MINDWEAVER_DATA_FILE: "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\mindweaver-data.json"
+          }
+        }
+      }
+    },
+    claudeCodeConfig: {
+      mcpServers: {
+        mindweaver: {
+          command: "cmd.exe",
+          args: ["/d", "/s", "/c", "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\start-mindweaver-mcp.bat"],
+          env: {
+            MINDWEAVER_DATA_FILE: "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\mindweaver-data.json"
+          }
+        }
+      }
+    }
+  };
+  const ctx = await startTestServer({ agentAccess });
+
+  try {
+    const response = await fetch(`${ctx.baseUrl}/api/agent-access`);
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.transport, "stdio");
+    assert.equal(payload.launcherPath, agentAccess.launcherPath);
+    assert.equal(payload.codexConfig.mcpServers.mindweaver.command, "cmd.exe");
+    assert.deepEqual(payload.claudeCodeConfig.mcpServers.mindweaver.env, agentAccess.claudeCodeConfig.mcpServers.mindweaver.env);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("agent access can safely add MindWeaver to Codex config", async () => {
+  const tempDir = await mkdtemp(join(os.tmpdir(), "mindweaver-codex-api-"));
+  const codexConfigPath = join(tempDir, ".codex", "config.toml");
+  const agentAccess = {
+    available: true,
+    transport: "stdio",
+    launcherPath: "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\start-mindweaver-mcp.bat",
+    dataFilePath: "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\mindweaver-data.json",
+    codexConfigPath,
+    codexConfig: {
+      mcpServers: {
+        mindweaver: {
+          command: "cmd.exe",
+          args: ["/d", "/s", "/c", "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\start-mindweaver-mcp.bat"],
+          env: {
+            MINDWEAVER_DATA_FILE: "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\mindweaver-data.json"
+          }
+        }
+      }
+    }
+  };
+  const ctx = await startTestServer({ agentAccess });
+
+  try {
+    const response = await fetch(`${ctx.baseUrl}/api/agent-access/codex-config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    const payload = await response.json();
+    const contents = await readFile(codexConfigPath, "utf8");
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.configPath, codexConfigPath);
+    assert.match(contents, /\[mcp_servers\.mindweaver]/);
+    assert.match(contents, /command = "cmd\.exe"/);
+  } finally {
+    await ctx.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveMindWeaverDataFile defaults to the shared MindWeaver app-data path", () => {
+  const originalAppData = process.env.APPDATA;
+  process.env.APPDATA = "C:\\Users\\Example\\AppData\\Roaming";
+
+  try {
+    assert.equal(
+      resolveMindWeaverDataFile(),
+      "C:\\Users\\Example\\AppData\\Roaming\\MindWeaver\\mindweaver-data.json"
+    );
+    assert.equal(
+      resolveMindWeaverDataFile("G:\\Projects\\MindWeaver\\custom-data.json"),
+      "G:\\Projects\\MindWeaver\\custom-data.json"
+    );
+  } finally {
+    if (originalAppData === undefined) {
+      delete process.env.APPDATA;
+    } else {
+      process.env.APPDATA = originalAppData;
+    }
+  }
+});
+
+test("desktop app requests do not overwrite maps created by the MCP server in another process", async () => {
+  const tempDir = await mkdtemp(join(os.tmpdir(), "mindweaver-concurrency-"));
+  const dbPath = join(tempDir, "data.json");
+  const appDb = createDb(dbPath);
+  await initDb(appDb);
+
+  const app = createApp({
+    db: appDb,
+    openaiClient: createMockOpenAI()
+  });
+  const server = createServer(app);
+
+  try {
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    const { operations } = createMindWeaverMcpServer({ dataFile: dbPath });
+    const createdMap = await operations.createMap({
+      title: "Cross-process MCP map",
+      description: "Map created by the MCP server while the desktop app is already running."
+    });
+
+    const sessionTargetResponse = await fetch(`${baseUrl}/api/session-target?limit=24`);
+    const sessionTarget = await sessionTargetResponse.json();
+    assert.equal(sessionTargetResponse.status, 200);
+    assert.equal(sessionTarget.activeSessionId, createdMap.map.id);
+
+    const maps = await operations.listMaps({ limit: 50, includeEnded: true });
+    assert.ok(maps.maps.some((map) => map.id === createdMap.map.id));
+
+    const graph = await operations.getGraph({ sessionId: createdMap.map.id, compact: true });
+    assert.equal(graph.session.id, createdMap.map.id);
+    assert.ok(graph.nodes.some((node) => node.id === `session:${createdMap.map.id}`));
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("desktop app event stream emits a data-changed update when the MCP server mutates the shared graph", async () => {
+  const tempDir = await mkdtemp(join(os.tmpdir(), "mindweaver-events-"));
+  const dbPath = join(tempDir, "data.json");
+  const appDb = createDb(dbPath);
+  await initDb(appDb);
+
+  const app = createApp({
+    db: appDb,
+    openaiClient: createMockOpenAI(),
+    dataFilePath: dbPath
+  });
+  const server = createServer(app);
+
+  try {
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    const response = await fetch(`${baseUrl}/api/events`, {
+      headers: {
+        Accept: "text/event-stream"
+      }
+    });
+
+    assert.equal(response.status, 200);
+    assert.ok(response.body);
+
+    const reader = response.body.getReader();
+    const initialChunk = await reader.read();
+    const initialText = Buffer.from(initialChunk.value ?? []).toString("utf8");
+    assert.match(initialText, /"type":"connected"/);
+
+    const { operations } = createMindWeaverMcpServer({ dataFile: dbPath });
+    const createdMap = await operations.createMap({
+      title: "Realtime MCP map",
+      description: "Used to verify the desktop event stream updates when the MCP server writes."
+    });
+
+    let streamedText = "";
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && !streamedText.includes('"type":"data-changed"')) {
+      const nextChunk = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timed out waiting for data-changed event.")), 1000))
+      ]);
+      streamedText += Buffer.from(nextChunk.value ?? []).toString("utf8");
+      if (nextChunk.done) break;
+    }
+
+    assert.match(streamedText, /"type":"data-changed"/);
+
+    const graph = await operations.getGraph({ sessionId: createdMap.map.id, compact: true });
+    assert.equal(graph.session.id, createdMap.map.id);
+
+    let duplicateEventText = "";
+    try {
+      const nextChunk = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("No duplicate event received.")), 400))
+      ]);
+      duplicateEventText = Buffer.from(nextChunk.value ?? []).toString("utf8");
+    } catch (error) {
+      assert.equal(error.message, "No duplicate event received.");
+    }
+
+    assert.doesNotMatch(duplicateEventText, /"type":"data-changed"/);
+
+    await reader.cancel();
+  } finally {
+    app.locals.closeRealtime?.();
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await rm(tempDir, { recursive: true, force: true });
   }
 });
 
@@ -2299,8 +2544,10 @@ test("DELETE /api/sessions/:id returns fresh target state without the deleted ma
     assert.equal(deleteResponse.status, 200);
     assert.equal(deleted.deletedSessionId, second.id);
     assert.equal(deleted.sessionTarget.sessions.some((entry) => entry.id === second.id), false);
+    assert.equal(deleted.sessionTarget.tabSessions.some((entry) => entry.id === second.id), false);
     assert.equal(deleted.sessionTarget.activeSessionId, null);
     assert.equal(deleted.sessionTarget.lastSessionId, first.id);
+    assert.equal(ctx.db.data.preferences.openSessionIds.includes(second.id), false);
   } finally {
     await ctx.close();
   }

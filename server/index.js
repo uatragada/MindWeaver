@@ -4,6 +4,7 @@ const runtime = await startMindWeaverServer();
 
 console.log(`MindWeaver running on ${runtime.url}`);
 console.log(`API available at ${runtime.apiUrl}`);
+console.log(`Using graph data file: ${runtime.dataFile}`);
 console.log(runtime.staticDirExists ? "Serving built web app from web/dist" : "Built web app not found. Run npm run build for production UI serving.");
 
 function shutdown(signal) {

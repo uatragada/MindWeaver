@@ -1587,6 +1587,10 @@ function repairSessionSelection(db) {
     preferences.lastSessionId = sessionsByStartedAt[0]?.id ?? null;
   }
 
+  if (!preferences.lastSessionId) {
+    preferences.lastSessionId = sessionsByStartedAt[0]?.id ?? null;
+  }
+
   return preferences;
 }
 
@@ -1826,11 +1830,20 @@ function deleteSessionData(db, sessionId) {
   const sessionExists = db.data.sessions.some((session) => session.id === sessionId);
   if (!sessionExists) return false;
 
+  const preferences = getUserPreferences(db);
+
   db.data.sessions = db.data.sessions.filter((session) => session.id !== sessionId);
   db.data.goals = db.data.goals.filter((goal) => goal.sessionId !== sessionId);
   db.data.artifacts = db.data.artifacts.filter((artifact) => artifact.sessionId !== sessionId);
   db.data.verifications = db.data.verifications.filter((verification) => verification.sessionId !== sessionId);
   db.data.reports = (db.data.reports ?? []).filter((report) => report.sessionId !== sessionId);
+  preferences.openSessionIds = preferences.openSessionIds.filter((id) => id !== sessionId);
+  if (preferences.activeSessionId === sessionId) {
+    preferences.activeSessionId = null;
+  }
+  if (preferences.lastSessionId === sessionId) {
+    preferences.lastSessionId = null;
+  }
 
   for (const node of db.data.nodes) {
     node.sessionIds = (node.sessionIds ?? []).filter((id) => id !== sessionId);

@@ -36,7 +36,8 @@ export const RIGHT_PANEL_LABELS = {
   progress: "Progress",
   import: "Import Sources",
   gaps: "Gap Analysis",
-  quiz: "Quiz Loop"
+  quiz: "Quiz Loop",
+  agents: "Agent Access"
 };
 
 export const NODE_TYPE_OPTIONS = [

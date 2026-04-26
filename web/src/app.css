@@ -2595,6 +2595,35 @@ select.text-input option:hover {
   color: #ffd6d6;
 }
 
+.agent-access-card,
+.agent-config-card {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-access-grid {
+  grid-template-columns: 1fr;
+}
+
+.agent-access-grid span {
+  overflow-wrap: anywhere;
+}
+
+.config-snippet {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--mw-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--mw-ink);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .landing-grid {
   display: grid;
   gap: 16px;

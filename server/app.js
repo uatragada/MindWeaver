@@ -1,9 +1,11 @@
 import express from "express";
 import cors from "cors";
 import { nanoid } from "nanoid";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, watch } from "node:fs";
 import { join } from "node:path";
+import { syncDbFromDisk } from "./db.js";
 import { requestStructuredJson, requestText } from "./openai.js";
+import { getDefaultCodexConfigPath, installMindWeaverCodexConfig } from "./codex-config.js";
 import * as services from "./services/index.js";
 
 const {
@@ -75,12 +77,51 @@ const {
   validateChatHistoryImportPayload,
   validateIngestPayload
 } = services;
-export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, staticDir = null } = {}) {
+function createDefaultAgentAccessPayload(dataFilePath = process.env.MINDWEAVER_DATA_FILE || null) {
+  const launcherPath = process.env.MINDWEAVER_MCP_LAUNCHER_PATH || null;
+  const command = launcherPath ? "cmd.exe" : "node";
+  const args = launcherPath ? ["/d", "/s", "/c", launcherPath] : ["server/mcp.js"];
+  const env = dataFilePath ? { MINDWEAVER_DATA_FILE: dataFilePath } : {};
+
+  return {
+    available: true,
+    transport: "stdio",
+    launcherPath,
+    dataFilePath,
+    packaged: false,
+    codexConfigPath: getDefaultCodexConfigPath(),
+    codexConfig: {
+      mcpServers: {
+        mindweaver: {
+          command,
+          args,
+          env
+        }
+      }
+    },
+    claudeCodeConfig: {
+      mcpServers: {
+        mindweaver: {
+          command,
+          args,
+          env
+        }
+      }
+    }
+  };
+}
+
+export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, staticDir = null, agentAccess = null, dataFilePath = null } = {}) {
   if (!db) throw new Error("createApp requires a db instance");
   db.data = sanitizeDataShape(db.data);
   repairSessionSelection(db);
+  const agentAccessPayload = agentAccess ?? createDefaultAgentAccessPayload(dataFilePath);
 
   const app = express();
+  const eventClients = new Set();
+  let dataFileWatcher = null;
+  let dataFileEventTimer = null;
+  let lastBroadcastDataSnapshot = null;
   const defaultJsonParser = express.json({ limit: "2mb" });
   const enqueuePageSave = createSequentialTaskQueue();
   const buildRequestLlmRuntime = (rawSelection) => ({
@@ -88,6 +129,57 @@ export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, stati
     ollamaBaseUrl,
     llmProvider: resolveRequestLlmSelection(db, rawSelection)
   });
+  const broadcastDataChange = (reason = "data-file-changed") => {
+    if (!eventClients.size) return;
+    const payload = `data: ${JSON.stringify({
+      type: "data-changed",
+      reason,
+      at: Date.now()
+    })}\n\n`;
+    for (const client of eventClients) {
+      client.write(payload);
+    }
+  };
+  if (dataFilePath && existsSync(dataFilePath)) {
+    try {
+      lastBroadcastDataSnapshot = readFileSync(dataFilePath, "utf8");
+    } catch {
+      lastBroadcastDataSnapshot = null;
+    }
+    dataFileWatcher = watch(dataFilePath, { persistent: false }, () => {
+      clearTimeout(dataFileEventTimer);
+      dataFileEventTimer = setTimeout(() => {
+        let nextSnapshot = null;
+        try {
+          nextSnapshot = readFileSync(dataFilePath, "utf8");
+        } catch {
+          nextSnapshot = null;
+        }
+
+        if (nextSnapshot === lastBroadcastDataSnapshot) {
+          return;
+        }
+
+        lastBroadcastDataSnapshot = nextSnapshot;
+        broadcastDataChange();
+      }, 75);
+    });
+    dataFileWatcher.on("error", (error) => {
+      console.warn("MindWeaver realtime watch failed:", error);
+    });
+  }
+  app.locals.closeRealtime = () => {
+    clearTimeout(dataFileEventTimer);
+    dataFileEventTimer = null;
+    if (dataFileWatcher) {
+      dataFileWatcher.close();
+      dataFileWatcher = null;
+    }
+    for (const client of eventClients) {
+      client.end();
+    }
+    eventClients.clear();
+  };
   app.disable("x-powered-by");
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -128,9 +220,63 @@ export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, stati
 
     defaultJsonParser(req, res, next);
   });
+  app.use(async (req, res, next) => {
+    if (!["GET", "HEAD"].includes(req.method)) {
+      next();
+      return;
+    }
+
+    try {
+      await syncDbFromDisk(db);
+      db.data = sanitizeDataShape(db.data);
+      repairSessionSelection(db);
+      next();
+    } catch (error) {
+      res.status(500).json({ error: error.message || "Could not synchronize MindWeaver state from disk." });
+    }
+  });
 
   app.get("/api/health", async (req, res) => {
     res.json(await buildHealthPayload({ db, openaiClient, ollamaBaseUrl }));
+  });
+
+  app.get("/api/agent-access", async (req, res) => {
+    res.json(agentAccessPayload);
+  });
+
+  app.get("/api/events", (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+
+    const heartbeat = setInterval(() => {
+      res.write(": heartbeat\n\n");
+    }, 15000);
+
+    eventClients.add(res);
+    res.write(`data: ${JSON.stringify({ type: "connected", at: Date.now() })}\n\n`);
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+      eventClients.delete(res);
+      res.end();
+    });
+  });
+
+  app.post("/api/agent-access/codex-config", async (req, res) => {
+    try {
+      res.json(installMindWeaverCodexConfig({
+        codexConfig: agentAccessPayload.codexConfig,
+        configPath: agentAccessPayload.codexConfigPath
+      }));
+    } catch (error) {
+      res.status(500).json({
+        ok: false,
+        error: error.message || "Could not update Codex config."
+      });
+    }
   });
 
   app.put("/api/settings/llm", async (req, res) => {

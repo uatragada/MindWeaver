@@ -89,9 +89,11 @@ export default function App() {
   const graphFitTimersRef = useRef([]);
   const pendingGraphFitRef = useRef(false);
   const lastCompletedViewportFitKeyRef = useRef("");
+  const realtimeRefreshStateRef = useRef({ active: false, pending: false });
 
   const [graphState, setGraphState] = useState(null);
   const [healthState, setHealthState] = useState(null);
+  const [agentAccess, setAgentAccess] = useState(null);
   const [llmSettings, setLlmSettings] = useState({
     provider: DEFAULT_LLM_PROVIDER,
     localModel: DEFAULT_LOCAL_LLM_MODEL
@@ -195,6 +197,7 @@ export default function App() {
   const [mergeTargetId, setMergeTargetId] = useState("");
   const [isMergingNode, setIsMergingNode] = useState(false);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const [isCopyingAgentConfig, setIsCopyingAgentConfig] = useState(false);
   const [isDeletingArtifact, setIsDeletingArtifact] = useState(false);
   const [isGraphViewportReady, setIsGraphViewportReady] = useState(false);
   const [pinnedNodePositions, setPinnedNodePositions] = useState({});
@@ -250,11 +253,13 @@ export default function App() {
     setHomeErrorMessage("");
 
     try {
-      const [health, targetState] = await Promise.all([
+      const [health, targetState, agentState] = await Promise.all([
         fetchJson(`${API_BASE}/api/health`),
-        fetchJson(`${API_BASE}/api/session-target?limit=24`)
+        fetchJson(`${API_BASE}/api/session-target?limit=24`),
+        fetchJson(`${API_BASE}/api/agent-access`).catch(() => null)
       ]);
       setHealthState(health);
+      setAgentAccess(agentState);
       applyTargetStateSnapshot(targetState, { preserveSessionId: sessionId });
     } catch (error) {
       setHomeErrorMessage(`${error.message}. Start the MindWeaver app, then refresh this page.`);
@@ -282,6 +287,29 @@ export default function App() {
   useEffect(() => {
     void loadHomeData();
   }, [loadHomeData]);
+
+  useEffect(() => {
+    const applyWorkspaceParams = () => {
+      const params = new URLSearchParams(window.location.search);
+      const requestedPanel = params.get("rightPanel") || params.get("panel");
+      if (requestedPanel && Object.hasOwn(RIGHT_PANEL_LABELS, requestedPanel)) {
+        setRightPanel(requestedPanel);
+        setRightRailMinimized(false);
+      }
+
+      const requestedSourceType = params.get("sourceType");
+      if (requestedSourceType && SOURCE_TYPE_OPTIONS.some((option) => option.value === requestedSourceType)) {
+        setImportForm((current) => ({
+          ...current,
+          sourceType: requestedSourceType
+        }));
+      }
+    };
+
+    applyWorkspaceParams();
+    window.addEventListener("popstate", applyWorkspaceParams);
+    return () => window.removeEventListener("popstate", applyWorkspaceParams);
+  }, []);
 
   useEffect(() => {
     const nextSettings = healthState?.llmSettings;
@@ -689,6 +717,53 @@ export default function App() {
     ]);
   }, [loadGraph, loadHomeData, sessionId]);
 
+  useEffect(() => {
+    const runRealtimeRefresh = async () => {
+      if (realtimeRefreshStateRef.current.active) {
+        realtimeRefreshStateRef.current.pending = true;
+        return;
+      }
+
+      realtimeRefreshStateRef.current.active = true;
+      try {
+        do {
+          realtimeRefreshStateRef.current.pending = false;
+          if (sessionId) {
+            await Promise.all([
+              loadHomeData(),
+              loadGraph(sessionId)
+            ]);
+          } else {
+            await loadHomeData();
+          }
+        } while (realtimeRefreshStateRef.current.pending);
+      } finally {
+        realtimeRefreshStateRef.current.active = false;
+      }
+    };
+
+    const eventSource = new EventSource(`${API_BASE}/api/events`);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload?.type !== "data-changed") return;
+      } catch {
+        return;
+      }
+
+      void runRealtimeRefresh();
+    };
+
+    eventSource.onerror = () => {
+      // EventSource reconnects automatically.
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [loadGraph, loadHomeData, sessionId]);
+
   const handleCreateSession = async (event, { fromTabs = false } = {}) => {
     event?.preventDefault?.();
     setIsCreatingSession(true);
@@ -873,6 +948,50 @@ export default function App() {
       setIsRestoringBackup(false);
     }
   };
+
+  const copyAgentConfig = async (kind) => {
+    const config = kind === "claude" ? agentAccess?.claudeCodeConfig : agentAccess?.codexConfig;
+    if (!config) {
+      setErrorMessage("Agent access configuration is not available yet.");
+      return;
+    }
+
+    setIsCopyingAgentConfig(true);
+    setErrorMessage("");
+
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
+      setStatusMessage(`${kind === "claude" ? "Claude Code" : "Codex"} MCP config copied.`);
+    } catch (error) {
+      setErrorMessage(error.message || "Could not copy the MCP configuration.");
+    } finally {
+      setIsCopyingAgentConfig(false);
+    }
+  };
+
+  const addCodexConfig = async () => {
+    if (!agentAccess?.codexConfig) {
+      setErrorMessage("Codex configuration is not available yet.");
+      return;
+    }
+
+    setIsCopyingAgentConfig(true);
+    setErrorMessage("");
+
+    try {
+      const result = await fetchJson(`${API_BASE}/api/agent-access/codex-config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      setStatusMessage(result.message || "MindWeaver was added to Codex config. Restart Codex to load it.");
+    } catch (error) {
+      setErrorMessage(error.message || "Could not update Codex config.");
+    } finally {
+      setIsCopyingAgentConfig(false);
+    }
+  };
+
 
   const selectedNode = useMemo(
     () => graphState?.nodes?.find((node) => node.id === selectedNodeId) ?? null,
@@ -2997,6 +3116,23 @@ export default function App() {
               </div>
             </div>
 
+            <div className="panel">
+              <p className="panel-title">Agent Access</p>
+              <div className="safety-stack">
+                <div><strong>MCP included</strong><span>Codex and Claude Code can launch MindWeaver's graph tools over stdio.</span></div>
+                <div><strong>Launcher</strong><span>{agentAccess?.launcherPath || "Open the desktop app to generate the Windows launcher."}</span></div>
+                <button className="secondary-button" type="button" disabled={isCopyingAgentConfig || !agentAccess?.codexConfig} onClick={() => copyAgentConfig("codex")}>
+                  {isCopyingAgentConfig ? "Copying..." : "Copy Codex MCP Config"}
+                </button>
+                <button className="secondary-button" type="button" disabled={isCopyingAgentConfig || !agentAccess?.codexConfig} onClick={addCodexConfig}>
+                  {isCopyingAgentConfig ? "Updating..." : "Add to Codex Config"}
+                </button>
+                <button className="ghost-button" type="button" disabled={isCopyingAgentConfig || !agentAccess?.claudeCodeConfig} onClick={() => copyAgentConfig("claude")}>
+                  Copy Claude Code Config
+                </button>
+              </div>
+            </div>
+
             <div className="panel recent-panel">
               <p className="panel-title">Recent Maps</p>
               <div className="review-list">
@@ -3078,6 +3214,10 @@ export default function App() {
               <button className={`workspace-button ${rightPanel === "quiz" ? "is-active" : ""}`} onClick={() => openRightPanel("quiz")}>
                 <strong>Quiz Loop</strong>
                 <span>{quizState.quiz?.length ? `${quizState.quiz.length} questions ready` : "Generate spaced review"}</span>
+              </button>
+              <button className={`workspace-button ${rightPanel === "agents" ? "is-active" : ""}`} onClick={() => openRightPanel("agents")}>
+                <strong>Agent Access</strong>
+                <span>{agentAccess?.launcherPath ? "Codex and Claude MCP setup" : "MCP setup details"}</span>
               </button>
             </div>
           </section>
@@ -3759,6 +3899,67 @@ export default function App() {
                     <div className="queue-meta">Generate a quiz to turn this graph into a feedback loop instead of a static picture.</div>
                   </div>
                 )}
+              </>
+            ) : null}
+
+            {rightPanel === "agents" ? (
+              <>
+                <div className="workspace-panel-header">
+                  <p className="panel-title">Agent Access</p>
+                  <h2>Connect Codex or Claude Code</h2>
+                  <p className="panel-subtitle">
+                    MindWeaver is packaged with a stdio MCP server. Your coding agent launches it on demand and reads or extends this local graph.
+                  </p>
+                </div>
+                <div className="summary-card agent-access-card">
+                  <h3>MCP launcher</h3>
+                  <div className="metadata-grid agent-access-grid">
+                    <div>
+                      <strong>Transport</strong>
+                      <span>{agentAccess?.transport || "stdio"}</span>
+                    </div>
+                    <div>
+                      <strong>Packaged</strong>
+                      <span>{agentAccess?.packaged ? "Yes" : "Local dev"}</span>
+                    </div>
+                    <div>
+                      <strong>Launcher</strong>
+                      <span>{agentAccess?.launcherPath || "Generated in the desktop app data folder"}</span>
+                    </div>
+                    <div>
+                      <strong>Data file</strong>
+                      <span>{agentAccess?.dataFilePath || "Uses the active MindWeaver data file"}</span>
+                    </div>
+                  </div>
+                  <div className="queue-meta">
+                    The launcher is a batch file so Windows MCP clients can start MindWeaver's MCP server without a separate terminal. In packaged builds it uses the installed MindWeaver executable as Node, so users do not need a system Node install for MCP.
+                  </div>
+                </div>
+                <div className="summary-card agent-config-card">
+                  <h3>Codex config</h3>
+                  <pre className="config-snippet">{JSON.stringify(agentAccess?.codexConfig ?? {}, null, 2)}</pre>
+                  <button className="secondary-button" type="button" disabled={isCopyingAgentConfig || !agentAccess?.codexConfig} onClick={() => copyAgentConfig("codex")}>
+                    {isCopyingAgentConfig ? "Copying..." : "Copy Codex Config"}
+                  </button>
+                  <button className="secondary-button" type="button" disabled={isCopyingAgentConfig || !agentAccess?.codexConfig} onClick={addCodexConfig}>
+                    {isCopyingAgentConfig ? "Updating..." : "Add to Codex Config"}
+                  </button>
+                </div>
+                <div className="summary-card agent-config-card">
+                  <h3>Claude Code config</h3>
+                  <pre className="config-snippet">{JSON.stringify(agentAccess?.claudeCodeConfig ?? {}, null, 2)}</pre>
+                  <button className="secondary-button" type="button" disabled={isCopyingAgentConfig || !agentAccess?.claudeCodeConfig} onClick={() => copyAgentConfig("claude")}>
+                    {isCopyingAgentConfig ? "Copying..." : "Copy Claude Code Config"}
+                  </button>
+                </div>
+                <div className="summary-card">
+                  <h3>Install workflow</h3>
+                  <div className="review-list compact-list">
+                    <div className="mini-note">Install MindWeaver with the desktop installer.</div>
+                    <div className="mini-note">Open Agent Access and copy the config for your MCP client.</div>
+                    <div className="mini-note">Restart Codex or Claude Code, then look for the mindweaver_* tools.</div>
+                  </div>
+                </div>
               </>
             ) : null}
 

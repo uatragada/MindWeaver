@@ -5,6 +5,7 @@ import { config } from "dotenv";
 import OpenAI from "openai";
 import { createDb, initDb } from "./db.js";
 import { createApp } from "./app.js";
+import { resolveMindWeaverDataFile } from "./data-file.js";
 import { DEFAULT_OLLAMA_BASE_URL } from "./openai.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -31,12 +32,14 @@ export async function startMindWeaverServer({
   host,
   staticDir = defaultStaticDir,
   dataFile,
-  envPaths = []
+  envPaths = [],
+  agentAccess = null
 } = {}) {
   configureEnv(envPaths);
   const resolvedPort = Number(port ?? process.env.PORT ?? 3001);
   const resolvedHost = host ?? process.env.HOST ?? "127.0.0.1";
-  const db = createDb(dataFile);
+  const resolvedDataFile = resolveMindWeaverDataFile(dataFile);
+  const db = createDb(resolvedDataFile);
   await initDb(db);
 
   const openaiClient = process.env.OPENAI_API_KEY
@@ -44,7 +47,7 @@ export async function startMindWeaverServer({
     : null;
   const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? DEFAULT_OLLAMA_BASE_URL;
 
-  const app = createApp({ db, openaiClient, ollamaBaseUrl, staticDir });
+  const app = createApp({ db, openaiClient, ollamaBaseUrl, staticDir, agentAccess, dataFilePath: resolvedDataFile });
   const server = await new Promise((resolveServer, rejectServer) => {
     const listener = app.listen(resolvedPort, resolvedHost, () => resolveServer(listener));
     listener.on("error", rejectServer);
@@ -54,6 +57,7 @@ export async function startMindWeaverServer({
 
   const close = () =>
     new Promise((resolveClose, rejectClose) => {
+      app.locals.closeRealtime?.();
       server.close((error) => {
         if (error) {
           rejectClose(error);
@@ -73,6 +77,7 @@ export async function startMindWeaverServer({
     apiUrl: `http://${resolvedHost}:${activePort}/api/health`,
     staticDir,
     staticDirExists: existsSync(staticDir),
+    dataFile: resolvedDataFile,
     close
   };
 }

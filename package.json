@@ -17,20 +17,27 @@
     "electron:dist": "node scripts/ensure-env.mjs && npm run build && electron-builder --dir",
     "electron:build": "node scripts/ensure-env.mjs && npm run build && electron-builder --win nsis",
     "test": "npm --prefix server test",
+    "test:desktop": "node --test electron/tests/*.test.mjs",
     "test:web": "npm --prefix web test",
     "test:extension:unit": "node --test extension/tests/mindweaver-client.test.js extension/tests/background-controller.test.js",
     "test:extension:integration": "node --test extension/tests/integration.test.js",
     "test:extension": "npm run test:extension:unit && npm run test:extension:integration",
-    "check": "npm test && npm run test:web && npm run test:extension:unit && npm run build",
+    "check": "npm test && npm run test:desktop && npm run test:web && npm run test:extension:unit && npm run build",
     "eval:fixtures": "npm --prefix server run eval:fixtures"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.20.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "jszip": "^3.10.1",
     "lowdb": "^7.0.1",
+    "mammoth": "^1.12.0",
     "nanoid": "^5.0.7",
-    "openai": "^4.52.0"
+    "openai": "^4.52.0",
+    "pdf-parse": "^1.1.4",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "electron": "^35.0.0",
@@ -40,6 +47,14 @@
   "build": {
     "appId": "local.mindweaver.desktop",
     "productName": "MindWeaver",
+    "protocols": [
+      {
+        "name": "MindWeaver",
+        "schemes": [
+          "mindweaver"
+        ]
+      }
+    ],
     "directories": {
       "output": "release"
     },
@@ -47,6 +62,7 @@
       "electron/**/*",
       "server/**/*",
       "web/dist/**/*",
+      "start-mcp.bat",
       "package.json"
     ],
     "extraResources": [
@@ -62,6 +78,7 @@
       "main": "electron/main.mjs"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis"
       ],
@@ -71,7 +88,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "include": "build/installer.nsh"
     }
   }
 }

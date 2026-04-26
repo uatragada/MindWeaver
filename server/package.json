@@ -5,16 +5,19 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "test": "node --test tests/api.test.js",
+    "mcp": "node mcp.js",
+    "test": "node --test tests/api.test.js tests/mcp.test.js tests/codex-config.test.js",
     "eval:fixtures": "node scripts/eval-fixtures.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "ajv": "^8.18.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "lowdb": "^7.0.1",
     "nanoid": "^5.0.7",
-    "openai": "^4.52.0"
+    "openai": "^4.52.0",
+    "zod": "^3.25.76"
   }
 }

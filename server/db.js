@@ -1,7 +1,9 @@
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
 import { Low } from "lowdb";
 import { JSONFile } from "lowdb/node";
+import { resolveMindWeaverDataFile } from "./data-file.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -25,14 +27,15 @@ export function createDefaultData() {
   };
 }
 
-export function createDb(filePath = resolve(__dirname, "data.json")) {
-  return new Low(new JSONFile(filePath), createDefaultData());
+export function createDb(filePath = resolveMindWeaverDataFile()) {
+  const resolvedFilePath = resolveMindWeaverDataFile(filePath);
+  mkdirSync(dirname(resolvedFilePath), { recursive: true });
+  return new Low(new JSONFile(resolvedFilePath), createDefaultData());
 }
 
 export const db = createDb();
 
-export async function initDb(targetDb = db) {
-  await targetDb.read();
+function normalizeDbData(targetDb) {
   targetDb.data ||= createDefaultData();
   targetDb.data.sessions ||= [];
   targetDb.data.goals ||= [];
@@ -51,5 +54,14 @@ export async function initDb(targetDb = db) {
   };
   targetDb.data.preferences.llmProvider = String(targetDb.data.preferences.llmProvider ?? "").trim().toLowerCase() === "local" ? "local" : "openai";
   targetDb.data.preferences.localLlmModel = String(targetDb.data.preferences.localLlmModel ?? "").trim() || "qwen3.5:4b";
+}
+
+export async function syncDbFromDisk(targetDb = db) {
+  await targetDb.read();
+  normalizeDbData(targetDb);
+}
+
+export async function initDb(targetDb = db) {
+  await syncDbFromDisk(targetDb);
   await targetDb.write();
 }
