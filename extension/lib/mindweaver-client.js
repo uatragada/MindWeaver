@@ -1,5 +1,6 @@
 const DEFAULT_API_BASES = ["http://127.0.0.1:3001", "http://localhost:3001"];
 const API_BASE_STORAGE_KEYS = ["mindweaverApiBase", "mindweaverApiBases"];
+const MINDWEAVER_PROTOCOL_URL = "mindweaver://open";
 
 function normalizeBase(base) {
   return String(base ?? "").trim().replace(/\/+$/, "");
@@ -49,6 +50,15 @@ function buildWebAppCandidates(apiBase, path = "") {
     `${parsed.origin}${normalizedPath}`,
     `http://${parsed.hostname}:5197${normalizedPath}`
   ]);
+}
+
+function buildMindWeaverProtocolUrl(path = "") {
+  const normalizedPath = String(path ?? "").trim();
+  if (!normalizedPath) return MINDWEAVER_PROTOCOL_URL;
+  const query = normalizedPath.startsWith("?")
+    ? normalizedPath
+    : `?path=${encodeURIComponent(normalizedPath)}`;
+  return `${MINDWEAVER_PROTOCOL_URL}${query}`;
 }
 
 function isHtmlLikeContentType(contentType) {
@@ -149,6 +159,8 @@ function createMindWeaverClient({
 export {
   API_BASE_STORAGE_KEYS,
   DEFAULT_API_BASES,
+  MINDWEAVER_PROTOCOL_URL,
+  buildMindWeaverProtocolUrl,
   buildWebAppCandidates,
   createMindWeaverClient,
   dedupeBases,

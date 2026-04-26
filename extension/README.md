@@ -11,6 +11,7 @@ The Chrome extension is the browser capture surface for MindWeaver. It supports 
 - `Continuous Save` is a green on/off toggle that snapshots each newly visited page while it is enabled, queues those saves in the extension, and sends them to MindWeaver one after another.
 - `Save selection to MindWeaver` in the right-click menu saves highlighted text as evidence.
 - `Open MindWeaver` opens the active map in the reachable local app surface, or the last-used map if capture is currently idle.
+- If the local server is unavailable, the popup switches to a start-app state and `Open MindWeaver` launches the desktop app through `mindweaver://open`.
 - Captured pages and highlights can then be reviewed, merged, and annotated with Markdown node notes inside the MindWeaver inspector.
 
 ## Privacy Model
@@ -57,6 +58,8 @@ npm run dev
 ```
 
 The extension sends saves to `http://localhost:3001`. The popup opens the matching local app surface that is currently reachable: `http://localhost:5197` during web development when the Vite dev server is running, otherwise the production-style local server at `http://localhost:3001`.
+
+Packaged desktop installs register the `mindweaver://` protocol. When the popup cannot reach the local API, click `Open MindWeaver` to start the installed app, then retry capture once setup or startup finishes.
 
 If the graph is already open when a capture finishes, use the in-canvas `Refresh map` button in MindWeaver to pull in the latest changes. The graph view no longer auto-refreshes.
 

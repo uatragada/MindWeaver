@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildWebAppCandidates, createMindWeaverClient, readConfiguredApiBases } from "../lib/mindweaver-client.js";
+import { buildMindWeaverProtocolUrl, buildWebAppCandidates, createMindWeaverClient, readConfiguredApiBases } from "../lib/mindweaver-client.js";
 
 test("readConfiguredApiBases prefers stored overrides before defaults", async () => {
   const storageArea = {
@@ -77,6 +77,12 @@ test("buildWebAppCandidates derives dev and fallback app URLs from the resolved 
     "http://127.0.0.1:3001/?sessionId=abc",
     "http://127.0.0.1:5197/?sessionId=abc"
   ]);
+});
+
+test("buildMindWeaverProtocolUrl builds the custom app launch URL", () => {
+  assert.equal(buildMindWeaverProtocolUrl(), "mindweaver://open");
+  assert.equal(buildMindWeaverProtocolUrl("?sessionId=abc"), "mindweaver://open?sessionId=abc");
+  assert.equal(buildMindWeaverProtocolUrl("/maps/abc"), "mindweaver://open?path=%2Fmaps%2Fabc");
 });
 
 test("pickWebUrl falls back to the packaged app when the dev server is unavailable", async () => {

@@ -1,4 +1,4 @@
-import { createMindWeaverClient } from "./lib/mindweaver-client.js";
+import { buildMindWeaverProtocolUrl, createMindWeaverClient } from "./lib/mindweaver-client.js";
 
 const AUTO_CAPTURE_ENABLED_STORAGE_KEY = "mindweaverAutoCaptureEnabled";
 const statusEl = document.getElementById("status");
@@ -11,6 +11,7 @@ const goalEl = document.getElementById("goal");
 const openBtn = document.getElementById("open");
 const lastCaptureEl = document.getElementById("lastCapture");
 let currentTargetState = null;
+let isAppUnavailable = false;
 const client = createMindWeaverClient({ storageArea: chrome.storage?.local });
 
 function getMapName(session, fallback = "Untitled map") {
@@ -28,6 +29,11 @@ function getCaptureErrorMessage(error) {
     return "The MindWeaver extension background worker did not respond. Reload the unpacked extension in chrome://extensions, then try again.";
   }
   return message || "Could not save this page. Make sure the local MindWeaver server is running.";
+}
+
+function isConnectionError(error) {
+  const message = String(error?.message ?? "");
+  return /could not reach|failed to fetch|fetch failed|networkerror|load failed|refused|tried:/i.test(message);
 }
 
 async function getCaptureState() {
@@ -88,6 +94,7 @@ async function refreshUI() {
     getCaptureState()
   ]);
   currentTargetState = targetState;
+  isAppUnavailable = false;
 
   renderTargetOptions(targetState);
   const visibleSessions = targetState.tabSessions ?? targetState.sessions ?? [];
@@ -112,12 +119,53 @@ async function refreshUI() {
   statusEl.textContent = activeLabel;
   workspaceEl.textContent = `${workspaceName} • Last used ${lastLabel}${captureState[AUTO_CAPTURE_ENABLED_STORAGE_KEY] ? " • Continuous save on" : ""}`;
   captureBtn.disabled = false;
+  createBtn.disabled = false;
+  autoCaptureBtn.disabled = false;
+  targetEl.disabled = false;
+  goalEl.disabled = false;
+  openBtn.textContent = "Open MindWeaver";
   renderAutoCaptureButton(Boolean(captureState[AUTO_CAPTURE_ENABLED_STORAGE_KEY]));
   lastCaptureEl.textContent = captureState.lastCaptureAt
     ? `${titleCaseStatus(captureState.lastCaptureStatus || "saved")} • ${captureState.lastCaptureTitle || captureState.lastCaptureMessage || new Date(captureState.lastCaptureAt).toLocaleTimeString()}${captureState.lastCaptureTarget ? ` (${captureState.lastCaptureTarget})` : ""}`
     : "None yet";
 
   return targetState;
+}
+
+function renderUnavailableState(error) {
+  isAppUnavailable = true;
+  currentTargetState = null;
+  targetEl.innerHTML = "";
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = "MindWeaver is not running";
+  targetEl.append(option);
+  statusEl.textContent = "MindWeaver is closed";
+  workspaceEl.textContent = "Click Open MindWeaver, then retry capture.";
+  lastCaptureEl.textContent = isConnectionError(error)
+    ? "Local app unavailable"
+    : (error?.message || "Unavailable");
+  captureBtn.disabled = true;
+  createBtn.disabled = true;
+  autoCaptureBtn.disabled = true;
+  targetEl.disabled = true;
+  goalEl.disabled = true;
+  openBtn.textContent = "Open MindWeaver";
+  renderAutoCaptureButton(false);
+}
+
+async function waitForMindWeaver(retries = 16, intervalMs = 600) {
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      await client.fetchJson("/api/health");
+      await refreshUI();
+      return true;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  return false;
 }
 
 async function setActiveTarget(sessionId) {
@@ -220,6 +268,25 @@ captureBtn.addEventListener("click", async () => {
 });
 
 openBtn.addEventListener("click", async () => {
+  if (isAppUnavailable) {
+    openBtn.disabled = true;
+    openBtn.textContent = "Opening...";
+    try {
+      await chrome.tabs.create({ url: buildMindWeaverProtocolUrl() });
+      const connected = await waitForMindWeaver();
+      if (!connected) {
+        workspaceEl.textContent = "MindWeaver was opened. If setup is still visible, finish it and reopen this popup.";
+      }
+    } catch (error) {
+      console.error("Failed to open MindWeaver protocol:", error);
+      alert(`Could not open MindWeaver. ${error.message}`);
+    } finally {
+      openBtn.disabled = false;
+      openBtn.textContent = "Open MindWeaver";
+    }
+    return;
+  }
+
   const sessionId = currentTargetState?.activeSessionId || currentTargetState?.lastSessionId || "";
   const path = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
   const webUrl = await client.pickWebUrl(path);
@@ -228,7 +295,5 @@ openBtn.addEventListener("click", async () => {
 
 refreshUI().catch((error) => {
   console.error("Failed to load popup state:", error);
-  statusEl.textContent = "Unavailable";
-  workspaceEl.textContent = "Connect to the local MindWeaver server";
-  lastCaptureEl.textContent = "Unavailable";
+  renderUnavailableState(error);
 });
