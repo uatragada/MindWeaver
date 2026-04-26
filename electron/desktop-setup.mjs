@@ -60,11 +60,44 @@ function getDesktopSetupPaths({ appPath, userDataPath, resourcesPath, isPackaged
   return {
     envLocalPath: resolve(userDataPath, ".env.local"),
     envExamplePath: resolve(appPath, "server", ".env.example"),
+    mcpLauncherPath: resolve(userDataPath, "start-mindweaver-mcp.bat"),
     setupStatePath: resolve(userDataPath, "desktop-setup.json"),
     extensionDir: isPackaged
       ? resolve(resourcesPath, "extension")
       : resolve(appPath, "extension")
   };
+}
+
+function escapeBatchValue(value) {
+  return String(value ?? "").replace(/%/g, "%%");
+}
+
+function writeDesktopMcpLauncher({
+  launcherPath,
+  dataFilePath,
+  envLocalPath,
+  mcpEntrypoint,
+  executablePath,
+  isPackaged
+}) {
+  const commandLines = [
+    "@echo off",
+    "setlocal",
+    `set "MINDWEAVER_DATA_FILE=${escapeBatchValue(dataFilePath)}"`,
+    `set "MINDWEAVER_ENV_FILE=${escapeBatchValue(envLocalPath)}"`
+  ];
+
+  if (isPackaged) {
+    commandLines.push(
+      "set \"ELECTRON_RUN_AS_NODE=1\"",
+      `"${escapeBatchValue(executablePath)}" "${escapeBatchValue(mcpEntrypoint)}"`
+    );
+  } else {
+    commandLines.push(`node "${escapeBatchValue(mcpEntrypoint)}"`);
+  }
+
+  commandLines.push("exit /b %errorlevel%", "");
+  writeFileSync(launcherPath, commandLines.join("\r\n"), "utf8");
 }
 
 function hasCompletedDesktopSetup(setupStatePath) {
@@ -88,5 +121,6 @@ export {
   hasCompletedDesktopSetup,
   markDesktopSetupComplete,
   readEnvValue,
-  upsertEnvValue
+  upsertEnvValue,
+  writeDesktopMcpLauncher
 };

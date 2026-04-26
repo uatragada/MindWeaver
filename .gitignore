@@ -14,6 +14,12 @@ node_modules/
 # Build output and generated app bundles
 dist/
 build/
+!build/
+!build/installer.nsh
+!build/icon.ico
+!build/icon.png
+!build/icon.svg
+!build/icon-*.png
 out/
 release/
 web/dist/

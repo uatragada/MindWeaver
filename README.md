@@ -51,6 +51,8 @@ MindWeaver still runs without an OpenAI key, but some features fall back to simp
 npm run dev
 ```
 
+This is the primary workflow. MindWeaver is designed to work best as a local web app in the browser, especially alongside the Chrome extension.
+
 That starts:
 
 - web app: `http://127.0.0.1:5197`
@@ -65,6 +67,8 @@ npm run electron:dev
 ```
 
 That starts the local API server, starts the React dev renderer, and opens MindWeaver in Electron.
+
+The browser/server flow and the Windows desktop app now use the same default local graph file, so maps stay in sync across both entry points unless you explicitly override `MINDWEAVER_DATA_FILE`.
 
 ### 4. Fastest possible first run
 
@@ -83,6 +87,7 @@ If you want double-click shortcuts on Windows:
 
 - `quick-start-first-time.bat`: installs dependencies, prompts for `OPENAI_API_KEY`, writes `server/.env.local`, asks where `chrome.exe` lives, and launches Chrome with the unpacked extension loaded.
 - `quick-start-dev.bat`: starts the backend and web dev server together so the app is available at `http://127.0.0.1:3001` and `http://127.0.0.1:5197`.
+- `start-mcp.bat`: launches the stdio MCP server for Codex, Claude Code, or another MCP client.
 
 ## Production-Style Local Run
 
@@ -97,6 +102,14 @@ Then open:
 
 - app: `http://127.0.0.1:3001`
 - health: `http://127.0.0.1:3001/api/health`
+
+By default, the local server stores maps in:
+
+```text
+%APPDATA%\MindWeaver\mindweaver-data.json
+```
+
+That is the same default graph file used by the packaged Windows app and the generated MCP launcher.
 
 On Windows, you can also double-click:
 
@@ -117,7 +130,13 @@ The Windows installer now also bundles the unpacked Chrome extension into the in
 
 - prompts for `OPENAI_API_KEY` and saves it in the desktop app's user-data `.env.local`
 - shows the packaged extension folder
-- can launch Chrome with the packaged extension already loaded
+- can copy the extension folder or open Chrome setup with the packaged extension already loaded
+- writes a user-data MCP launcher at `%APPDATA%\MindWeaver\start-mindweaver-mcp.bat`
+- includes a `Connect Coding Agent` step with `Add to Codex Config`, copy buttons for Codex and Claude Code, config help, and a launcher test
+
+Inside the app, open `Agent Access` to add MindWeaver to Codex automatically or copy ready-to-use Codex or Claude Code MCP configuration. The packaged MCP launcher uses the installed MindWeaver executable as Node, so users do not need a separate Node.js install for agent access.
+
+MindWeaver also stays available in the Windows tray after the main window is closed. The tray menu can reopen the app, create a quick note, import clipboard text, import PDF/Word/PowerPoint/text files into the active map, open Agent Access, open extension setup, or fully quit the background service. See [docs/DESKTOP.md](docs/DESKTOP.md) for the user-facing desktop guide.
 
 ## A 5-Minute Tour
 
@@ -158,7 +177,7 @@ Use it to:
 - search nodes
 - filter by type
 - navigate with the minimap, branch focus, and path-to-root tools
-- refresh the canvas manually after extension saves or other external updates
+- see extension saves, tray imports, and MCP edits show up automatically as the local graph file changes
 - inspect one concept at a time
 - merge duplicates
 - approve or reject weak nodes
@@ -211,6 +230,18 @@ Good local-only workflows:
 - paste text from a PDF you already own
 - dump saved reading notes as Markdown
 - add repo docs or architecture notes before a project deep dive
+
+## Use It With Codex Or Claude Code
+
+MindWeaver includes a local stdio MCP server so coding agents can read, search, traverse, and safely add to your maps:
+
+```bash
+npm --prefix server run mcp
+```
+
+Configure your MCP client to launch `server/mcp.js` with Node. See [docs/MCP.md](docs/MCP.md) for Codex and Claude Code examples, the full tool list, and data-safety notes.
+
+On Windows, MCP clients can also launch [start-mcp.bat](start-mcp.bat).
 
 If you are sharing the repo publicly, this is the easiest path to recommend.
 

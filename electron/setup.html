@@ -118,6 +118,39 @@
     }
     .status.is-error { color: #ffd6d6; }
     .status.is-success { color: #c9ffd6; }
+    .config-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      margin-top: 14px;
+    }
+    .config-box {
+      min-height: 120px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 0.78rem;
+      color: #d9f1ff;
+    }
+    .help-panel {
+      display: none;
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.035);
+    }
+    .help-panel.is-open {
+      display: block;
+    }
+    .checklist {
+      margin: 12px 0 0;
+      padding-left: 22px;
+      color: var(--muted);
+    }
+    .checklist li {
+      margin: 6px 0;
+    }
   </style>
 </head>
 <body>
@@ -135,16 +168,55 @@
 
       <section class="card">
         <h2>Chrome extension</h2>
-        <p class="muted">MindWeaver packaged the unpacked extension here. You can open this folder manually in <strong>chrome://extensions</strong>, or let MindWeaver launch Chrome with it loaded.</p>
+        <p class="muted">MindWeaver packaged the unpacked extension here. You can copy the folder path, open the folder manually in <strong>chrome://extensions</strong>, or let MindWeaver launch Chrome with it loaded.</p>
         <code id="extension-path">Loading…</code>
 
         <label for="chrome-path">Chrome path</label>
         <input id="chrome-path" type="text" autocomplete="off" placeholder="C:\Program Files\Google\Chrome\Application\chrome.exe" />
 
         <div class="actions">
-          <button id="launch-chrome" type="button">Launch Chrome with Extension</button>
+          <button id="launch-chrome" type="button">Open Chrome Setup</button>
+          <button id="copy-extension-path" type="button">Copy Chrome Extension Folder</button>
           <button id="open-folder" type="button">Open Extension Folder</button>
         </div>
+      </section>
+
+      <section class="card">
+        <h2>Connect Coding Agent</h2>
+        <p class="muted">Codex and Claude Code can launch MindWeaver's MCP server on demand. Copy the config for your client, paste it into the client's MCP settings, then restart the client.</p>
+        <code id="agent-launcher">Loading…</code>
+        <div class="actions">
+          <button id="copy-codex-config" type="button">Copy Codex Config</button>
+          <button id="add-codex-config" type="button">Add to Codex Config</button>
+          <button id="copy-claude-config" type="button">Copy Claude Code Config</button>
+          <button id="open-config-help" type="button">Open Config Help</button>
+          <button id="test-agent-launcher" type="button">Test Agent Launcher</button>
+        </div>
+        <div id="config-help" class="help-panel">
+          <h2>Config help</h2>
+          <p class="muted" id="platform-help">Paste the copied JSON into your MCP client's configuration file, save it, then restart the client.</p>
+          <div class="config-grid">
+            <div>
+              <p class="muted">Codex</p>
+              <code id="codex-config" class="config-box">{}</code>
+            </div>
+            <div>
+              <p class="muted">Claude Code</p>
+              <code id="claude-config" class="config-box">{}</code>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Post-install checklist</h2>
+        <ol class="checklist">
+          <li>Choose OpenAI or leave it blank for Local (Ollama).</li>
+          <li>Open Chrome Setup or copy the extension folder for manual loading.</li>
+          <li>Add MindWeaver to Codex or copy the Codex/Claude Code MCP config.</li>
+          <li>Test Agent Launcher and confirm MindWeaver MCP tools are visible.</li>
+          <li>Click Save and Continue, then create or open your first map.</li>
+        </ol>
       </section>
     </div>
 
@@ -166,6 +238,30 @@
     const skipButton = document.getElementById("skip");
     const launchChromeButton = document.getElementById("launch-chrome");
     const openFolderButton = document.getElementById("open-folder");
+    const copyExtensionPathButton = document.getElementById("copy-extension-path");
+    const copyCodexConfigButton = document.getElementById("copy-codex-config");
+    const addCodexConfigButton = document.getElementById("add-codex-config");
+    const copyClaudeConfigButton = document.getElementById("copy-claude-config");
+    const openConfigHelpButton = document.getElementById("open-config-help");
+    const testAgentLauncherButton = document.getElementById("test-agent-launcher");
+    const agentLauncherEl = document.getElementById("agent-launcher");
+    const configHelpEl = document.getElementById("config-help");
+    const platformHelpEl = document.getElementById("platform-help");
+    const codexConfigEl = document.getElementById("codex-config");
+    const claudeConfigEl = document.getElementById("claude-config");
+    let codexConfigText = "{}";
+    let claudeConfigText = "{}";
+
+    function getPlatformHelp() {
+      const platform = navigator.platform.toLowerCase();
+      if (platform.includes("win")) {
+        return "Windows: paste the copied JSON into your MCP client's config file. The command uses cmd.exe to launch the generated MindWeaver batch file from AppData.";
+      }
+      if (platform.includes("mac")) {
+        return "macOS: paste the copied JSON into your MCP client's config file. If you move MindWeaver, reopen it once so the launcher/config paths can refresh.";
+      }
+      return "Linux: paste the copied JSON into your MCP client's config file. If needed, replace the command with node and point args at server/mcp.js.";
+    }
 
     function setStatus(message, tone = "") {
       statusEl.textContent = message || "";
@@ -179,8 +275,18 @@
         openAiKeyEl.value = state.openAiKey || "";
         chromePathEl.value = state.chromePath || "";
         extensionPathEl.textContent = state.extensionPath || "Unavailable";
+        agentLauncherEl.textContent = state.agentAccess?.launcherPath || "Unavailable";
+        codexConfigText = JSON.stringify(state.agentAccess?.codexConfig || {}, null, 2);
+        claudeConfigText = JSON.stringify(state.agentAccess?.claudeCodeConfig || {}, null, 2);
+        codexConfigEl.textContent = codexConfigText;
+        claudeConfigEl.textContent = claudeConfigText;
+        platformHelpEl.textContent = getPlatformHelp();
         launchChromeButton.disabled = !extensionAvailable;
         openFolderButton.disabled = !extensionAvailable;
+        copyExtensionPathButton.disabled = !extensionAvailable;
+        copyCodexConfigButton.disabled = !state.agentAccess?.codexConfig;
+        addCodexConfigButton.disabled = !state.agentAccess?.codexConfig;
+        copyClaudeConfigButton.disabled = !state.agentAccess?.claudeCodeConfig;
         if (!extensionAvailable) {
           setStatus("The packaged Chrome extension could not be found.", "error");
         }
@@ -194,6 +300,11 @@
       skipButton.disabled = true;
       launchChromeButton.disabled = true;
       openFolderButton.disabled = true;
+      copyExtensionPathButton.disabled = true;
+      copyCodexConfigButton.disabled = true;
+      addCodexConfigButton.disabled = true;
+      copyClaudeConfigButton.disabled = true;
+      testAgentLauncherButton.disabled = true;
       try {
         await action();
       } finally {
@@ -201,6 +312,11 @@
         skipButton.disabled = false;
         launchChromeButton.disabled = !extensionAvailable;
         openFolderButton.disabled = !extensionAvailable;
+        copyExtensionPathButton.disabled = !extensionAvailable;
+        copyCodexConfigButton.disabled = codexConfigText === "{}";
+        addCodexConfigButton.disabled = codexConfigText === "{}";
+        copyClaudeConfigButton.disabled = claudeConfigText === "{}";
+        testAgentLauncherButton.disabled = false;
       }
     }
 
@@ -228,6 +344,36 @@
 
     openFolderButton.addEventListener("click", () => withBusyState(async () => {
       const result = await window.mindWeaverSetup.openExtensionFolder();
+      setStatus(result.message, result.ok ? "success" : "error");
+    }));
+
+    copyExtensionPathButton.addEventListener("click", () => withBusyState(async () => {
+      const result = await window.mindWeaverSetup.copyText(extensionPathEl.textContent);
+      setStatus(result.message || "Extension folder copied.", result.ok ? "success" : "error");
+    }));
+
+    copyCodexConfigButton.addEventListener("click", () => withBusyState(async () => {
+      const result = await window.mindWeaverSetup.copyText(codexConfigText);
+      setStatus(result.ok ? "Codex MCP config copied." : result.message, result.ok ? "success" : "error");
+    }));
+
+    addCodexConfigButton.addEventListener("click", () => withBusyState(async () => {
+      const result = await window.mindWeaverSetup.addCodexConfig();
+      setStatus(result.message || "MindWeaver was added to Codex config.", result.ok ? "success" : "error");
+    }));
+
+    copyClaudeConfigButton.addEventListener("click", () => withBusyState(async () => {
+      const result = await window.mindWeaverSetup.copyText(claudeConfigText);
+      setStatus(result.ok ? "Claude Code MCP config copied." : result.message, result.ok ? "success" : "error");
+    }));
+
+    openConfigHelpButton.addEventListener("click", () => {
+      configHelpEl.classList.toggle("is-open");
+    });
+
+    testAgentLauncherButton.addEventListener("click", () => withBusyState(async () => {
+      setStatus("Testing MindWeaver MCP launcher...");
+      const result = await window.mindWeaverSetup.testAgentLauncher();
       setStatus(result.message, result.ok ? "success" : "error");
     }));
 

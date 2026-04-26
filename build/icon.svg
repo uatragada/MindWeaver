@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="MindWeaver">
+  <rect width="1024" height="1024" fill="#000"/>
+  <rect x="76" y="76" width="872" height="872" rx="190" fill="#050505" stroke="#2b2b2b" stroke-width="6"/>
+  <g fill="none" stroke="#f8f8f8" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="512" cy="512" rx="334" ry="298" stroke-width="5"/>
+    <path d="M254 752 512 512 770 752" stroke-width="42"/>
+    <path d="M254 272 512 512 770 272" stroke-width="42"/>
+    <path d="M512 224v576" stroke-width="7"/>
+    <path d="M254 272v480M770 272v480" stroke-width="20"/>
+    <path d="M178 512 254 464v96l-76-48ZM846 512l-76-48v96l76-48Z" stroke-width="7"/>
+    <path d="M332 654V450l116 130M692 654V450L576 580" stroke-width="7"/>
+  </g>
+  <g fill="#f8f8f8" stroke="#f8f8f8">
+    <circle cx="254" cy="272" r="45" fill="#050505" stroke-width="8"/>
+    <circle cx="254" cy="752" r="45" fill="#050505" stroke-width="8"/>
+    <circle cx="770" cy="272" r="45" fill="#050505" stroke-width="8"/>
+    <circle cx="770" cy="752" r="45" fill="#050505" stroke-width="8"/>
+    <circle cx="512" cy="512" r="42" fill="#050505" stroke-width="8"/>
+    <circle cx="512" cy="224" r="35" fill="#050505" stroke-width="7"/>
+    <circle cx="512" cy="800" r="31" fill="#050505" stroke-width="7"/>
+    <circle cx="178" cy="512" r="28" fill="#050505" stroke-width="7"/>
+    <circle cx="846" cy="512" r="28" fill="#050505" stroke-width="7"/>
+    <circle cx="254" cy="272" r="22" stroke-width="0"/>
+    <circle cx="254" cy="752" r="22" stroke-width="0"/>
+    <circle cx="770" cy="272" r="22" stroke-width="0"/>
+    <circle cx="770" cy="752" r="22" stroke-width="0"/>
+    <circle cx="512" cy="512" r="18" stroke-width="0"/>
+    <circle cx="512" cy="224" r="16" stroke-width="0"/>
+    <circle cx="512" cy="800" r="13" stroke-width="0"/>
+    <circle cx="178" cy="512" r="11" stroke-width="0"/>
+    <circle cx="846" cy="512" r="11" stroke-width="0"/>
+  </g>
+</svg>

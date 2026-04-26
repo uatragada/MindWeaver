@@ -188,6 +188,7 @@ async function main() {
     console.log("");
     console.log("Setup complete.");
     console.log("Next time, run quick-start-dev.bat to start the backend and web app.");
+    console.log("For Codex or Claude Code MCP access, configure the client to launch start-mcp.bat.");
   } finally {
     rl.close();
   }

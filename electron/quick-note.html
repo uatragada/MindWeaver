@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Create MindWeaver Note</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050505;
+      --panel: rgba(16, 16, 16, 0.96);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #f4f4f4;
+      --muted: #9b9b9b;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 20px;
+      background: #050505;
+      color: var(--text);
+      font: 15px/1.5 "Aptos", "Segoe UI", sans-serif;
+    }
+
+    main {
+      display: grid;
+      gap: 14px;
+    }
+
+    h1, p { margin: 0; }
+    h1 { font-size: 1.45rem; }
+    p { color: var(--muted); }
+
+    .card {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel);
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.055);
+      color: var(--text);
+      font: inherit;
+      letter-spacing: 0;
+      text-transform: none;
+      padding: 10px 12px;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 230px;
+      resize: vertical;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 160px;
+      gap: 10px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      min-height: 40px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      font: inherit;
+      font-weight: 700;
+      padding: 9px 13px;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: #f4f4f4;
+      color: #050505;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+
+    .status {
+      min-height: 22px;
+      color: var(--muted);
+    }
+
+    .status.is-error { color: #ffd6d6; }
+    .status.is-success { color: #c9ffd6; }
+
+    @media (max-width: 620px) {
+      .row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Create a MindWeaver note</h1>
+      <p>Create a node with a Markdown note, or leave the node label blank to import this as source material.</p>
+    </header>
+
+    <section class="card">
+      <label>
+        Destination map
+        <select id="session"></select>
+      </label>
+      <div class="row">
+        <label>
+          Node label
+          <input id="label" placeholder="Example: bounded graph writes" />
+        </label>
+        <label>
+          Node type
+          <select id="type">
+            <option value="concept">Concept</option>
+            <option value="skill">Skill</option>
+            <option value="topic">Topic</option>
+            <option value="domain">Domain</option>
+            <option value="area">Area</option>
+            <option value="goal">Goal</option>
+          </select>
+        </label>
+      </div>
+      <label>
+        Description
+        <input id="description" placeholder="Optional short description" />
+      </label>
+      <label>
+        Note title
+        <input id="title" placeholder="Optional title if no node label is provided" />
+      </label>
+      <label>
+        Note
+        <textarea id="content" placeholder="Paste or write the note here..."></textarea>
+      </label>
+      <div id="status" class="status" aria-live="polite"></div>
+      <div class="actions">
+        <button id="save" class="primary" type="button">Save Note</button>
+        <button id="clear" type="button">Clear</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const sessionEl = document.getElementById("session");
+    const labelEl = document.getElementById("label");
+    const typeEl = document.getElementById("type");
+    const descriptionEl = document.getElementById("description");
+    const titleEl = document.getElementById("title");
+    const contentEl = document.getElementById("content");
+    const statusEl = document.getElementById("status");
+    const saveButton = document.getElementById("save");
+    const clearButton = document.getElementById("clear");
+
+    function setStatus(message, tone = "") {
+      statusEl.textContent = message || "";
+      statusEl.className = `status${tone ? ` is-${tone}` : ""}`;
+    }
+
+    function mapName(session) {
+      return String(session?.goal || "").trim() || "Untitled map";
+    }
+
+    function applyPrefill(prefill = {}) {
+      if (prefill.title) titleEl.value = prefill.title;
+      if (prefill.label) labelEl.value = prefill.label;
+      if (prefill.description) descriptionEl.value = prefill.description;
+      if (prefill.content) contentEl.value = prefill.content;
+      if (prefill.type) typeEl.value = prefill.type;
+    }
+
+    async function loadState() {
+      try {
+        const state = await window.mindWeaverQuickNote.loadState();
+        const target = state.target || {};
+        const sessions = target.tabSessions?.length ? target.tabSessions : target.sessions || [];
+        sessionEl.innerHTML = "";
+
+        if (!sessions.length) {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "Open MindWeaver and create a map first";
+          sessionEl.append(option);
+          saveButton.disabled = true;
+        } else {
+          for (const session of sessions) {
+            const option = document.createElement("option");
+            option.value = session.id;
+            option.textContent = mapName(session);
+            sessionEl.append(option);
+          }
+          sessionEl.value = target.activeSessionId || target.lastSessionId || sessions[0].id;
+        }
+
+        applyPrefill(state.prefill || {});
+      } catch (error) {
+        setStatus(error.message || String(error), "error");
+      }
+    }
+
+    saveButton.addEventListener("click", async () => {
+      saveButton.disabled = true;
+      setStatus("Saving note...");
+      try {
+        const result = await window.mindWeaverQuickNote.submit({
+          sessionId: sessionEl.value,
+          label: labelEl.value,
+          type: typeEl.value,
+          description: descriptionEl.value,
+          title: titleEl.value,
+          content: contentEl.value
+        });
+        setStatus(result.message || "Saved.", "success");
+      } catch (error) {
+        setStatus(error.message || String(error), "error");
+      } finally {
+        saveButton.disabled = false;
+      }
+    });
+
+    clearButton.addEventListener("click", () => {
+      labelEl.value = "";
+      descriptionEl.value = "";
+      titleEl.value = "";
+      contentEl.value = "";
+      setStatus("");
+    });
+
+    window.mindWeaverQuickNote.onPrefill(applyPrefill);
+    loadState();
+  </script>
+</body>
+</html>
