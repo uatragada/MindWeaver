@@ -2817,7 +2817,7 @@ export default function App() {
         {!mapTabsCollapsed && sessionTargetState.activeSession ? (
           <span className="map-tabs-target-pill">
             <span className="map-tabs-target-dot" aria-hidden="true" />
-            {getMapName(sessionTargetState.activeSession)}
+            <span className="map-tabs-target-name">{getMapName(sessionTargetState.activeSession)}</span>
           </span>
         ) : null}
 
@@ -2976,25 +2976,98 @@ export default function App() {
     </TopCommandBar>
   );
 
+  const homeStats = {
+    maps: recentSessions.length,
+    live: recentSessions.filter((session) => !session.endedAt).length,
+    concepts: recentSessions.reduce((total, session) => total + (session.conceptCount ?? 0), 0),
+    sources: recentSessions.reduce((total, session) => total + (session.sourceCount ?? 0), 0)
+  };
+
   if (!sessionId) {
     return (
       <div className="page-shell">
         {mapTabsChrome}
-        <div className="landing-shell">
-          <section className="landing-hero panel">
-            <p className="panel-title">MindWeaver</p>
-            <h1>Build a knowledge map from what you are actually learning.</h1>
-            <p>
-              Start a map, save the current page from the extension, or paste notes and transcripts directly.
-              MindWeaver turns the work into a source-grounded map you can review, quiz, and improve.
-            </p>
-            <div className="llm-settings-panel">
+        <div className="landing-shell home-workspace">
+          <div className="home-main-column">
+            <section className="landing-hero home-command-panel panel">
+              <div className="home-heading-row">
+                <div>
+                  <p className="panel-title">MindWeaver</p>
+                  <h1>All Maps</h1>
+                  <p>Start a map, reopen recent work, or tune capture settings before you enter the graph workspace.</p>
+                </div>
+                <div className="home-status-stack" aria-label="Map summary">
+                  <div><span>Maps</span><strong>{homeStats.maps}</strong></div>
+                  <div><span>Live</span><strong>{homeStats.live}</strong></div>
+                  <div><span>Concepts</span><strong>{homeStats.concepts}</strong></div>
+                  <div><span>Sources</span><strong>{homeStats.sources}</strong></div>
+                </div>
+              </div>
+
+              <form className="start-form home-start-form" onSubmit={handleCreateSession}>
+                <label className="home-start-field">
+                  <span>New map</span>
+                  <textarea
+                    className="text-area compact-area"
+                    placeholder="Example: Event-driven systems knowledge map"
+                    value={startGoal}
+                    onChange={(event) => setStartGoal(event.target.value)}
+                  />
+                </label>
+                <div className="home-start-actions">
+                  <button className="primary-button jumbo-button" type="submit" disabled={isCreatingSession}>
+                    <Plus size={16} aria-hidden="true" /> {isCreatingSession ? "Starting..." : "Start A Knowledge Map"}
+                  </button>
+                  <button className="secondary-button jumbo-button" type="button" onClick={handleCreateDemoSession} disabled={isCreatingDemo}>
+                    <Network size={16} aria-hidden="true" /> {isCreatingDemo ? "Building demo..." : "Try A Demo Map"}
+                  </button>
+                </div>
+              </form>
+              {homeErrorMessage ? <div className="message-banner error-banner">{homeErrorMessage}</div> : null}
+            </section>
+
+            <section className="panel recent-panel home-recent-panel">
+              <div className="home-section-header">
+                <div>
+                  <p className="panel-title">Recent Maps</p>
+                  <h2>Pick up where you left off</h2>
+                </div>
+                {sessionTargetState.activeSession ? (
+                  <button className="small-button" type="button" onClick={() => openSessionTab(sessionTargetState.activeSession.id)}>
+                    <Home size={14} aria-hidden="true" /> Active Map
+                  </button>
+                ) : null}
+              </div>
+              <div className="review-list home-map-list">
+                {recentSessions.length ? recentSessions.map((session) => (
+                  <button
+                    key={session.id}
+                    className="session-card home-map-row"
+                    onClick={() => openSessionTab(session.id)}
+                  >
+                    <strong>{getMapName(session)}</strong>
+                    <span>{session.conceptCount} concepts</span>
+                    <span>{session.sourceCount} sources</span>
+                    <span>{session.endedAt ? "ended" : "live"}</span>
+                  </button>
+                )) : (
+                  <div className="queue-item">
+                    <h3>No maps yet</h3>
+                    <div className="queue-meta">Start your first map above. The extension is optional for getting started.</div>
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
+
+          <div className="home-side-column">
+            <section className="panel home-provider-panel">
               <div className="llm-settings-header">
                 <div>
                   <span className="panel-title">AI Provider</span>
                   <strong>{activeLlmProviderLabel}{llmSettings.provider === "local" ? ` • ${activeLocalModelLabel}` : ""}</strong>
                 </div>
-                <p>The same setting is shared across the homepage, the graph workspace, and extension captures.</p>
+                <p>Shared by imports, graph tasks, and extension captures.</p>
               </div>
               <div className="llm-settings-grid">
                 <label className="llm-settings-field">
@@ -3021,67 +3094,26 @@ export default function App() {
               <div className={`toolbar-note llm-status-note ${canUseSelectedLlm ? "" : "is-warning"}`.trim()}>
                 {isSavingLlmSettings ? "Saving AI provider preference..." : llmStatusMessage}
               </div>
-            </div>
-            <form className="start-form" onSubmit={handleCreateSession}>
-              <label>
-                <span>Map name</span>
-                <textarea
-                  className="text-area compact-area"
-                  placeholder="Example: Event-driven systems knowledge map"
-                  value={startGoal}
-                  onChange={(event) => setStartGoal(event.target.value)}
-                />
-              </label>
-              <button className="primary-button jumbo-button" type="submit" disabled={isCreatingSession}>
-                {isCreatingSession ? "Starting..." : "Start A Knowledge Map"}
-              </button>
-              <button className="secondary-button jumbo-button" type="button" onClick={handleCreateDemoSession} disabled={isCreatingDemo}>
-                {isCreatingDemo ? "Building demo..." : "Try A Demo Map"}
-              </button>
-            </form>
-            {homeErrorMessage ? <div className="message-banner error-banner">{homeErrorMessage}</div> : null}
-          </section>
+            </section>
 
-          <section className="landing-grid">
-            <div className="panel">
-              <p className="panel-title">How It Works</p>
-              <div className="step-list">
-                <div className="step-card"><strong>1. Name the map</strong><span>Start with a clear map name, then add goal nodes only when they help the structure.</span></div>
-                <div className="step-card"><strong>2. Capture sources</strong><span>Browse with the extension or import notes, PDF text, docs, and transcripts.</span></div>
-                <div className="step-card"><strong>3. Review the map</strong><span>Approve good concepts, reject noisy ones, and use quizzes to strengthen memory.</span></div>
+            <section className="panel home-context-panel">
+              <p className="panel-title">Workspace Flow</p>
+              <div className="home-context-list">
+                <div><Upload size={16} aria-hidden="true" /><strong>Capture</strong><span>Extension pages, notes, transcripts, docs, and reading lists.</span></div>
+                <div><ListChecks size={16} aria-hidden="true" /><strong>Review</strong><span>Approve useful concepts, reject noisy nodes, and quiz weak areas.</span></div>
+                <div><Settings size={16} aria-hidden="true" /><strong>Manage</strong><span>Exports, backup, restore, provider settings, and local deletion.</span></div>
               </div>
-            </div>
+            </section>
 
-            <div className="panel">
-              <p className="panel-title">Safety</p>
-              <div className="safety-stack">
-                <div><strong>Local-first storage</strong><span>Your graph is stored in the local server data file.</span></div>
-                <div><strong>AI visibility</strong><span>{llmStatusMessage} Up to {contentLimitChars.toLocaleString()} characters per source can be sent to the selected model for classification.</span></div>
-                <div><strong>Human control</strong><span>Every inferred concept can be approved, rejected, or deleted with the session.</span></div>
+            <section className="panel home-context-panel">
+              <p className="panel-title">Local Data</p>
+              <div className="home-context-list">
+                <div><ShieldCheck size={16} aria-hidden="true" /><strong>Storage</strong><span>Graphs stay in the local server data file.</span></div>
+                <div><Settings size={16} aria-hidden="true" /><strong>AI visibility</strong><span>Up to {contentLimitChars.toLocaleString()} characters per source can be sent to the selected model.</span></div>
+                <div><ListChecks size={16} aria-hidden="true" /><strong>Control</strong><span>Inferred concepts can be approved, rejected, merged, exported, or deleted.</span></div>
               </div>
-            </div>
-
-            <div className="panel recent-panel">
-              <p className="panel-title">Recent Maps</p>
-              <div className="review-list">
-                {recentSessions.length ? recentSessions.map((session) => (
-                  <button
-                    key={session.id}
-                    className="session-card"
-                    onClick={() => openSessionTab(session.id)}
-                  >
-                    <strong>{getMapName(session)}</strong>
-                    <span>{session.conceptCount} concepts • {session.sourceCount} sources • {session.endedAt ? "ended" : "live"}</span>
-                  </button>
-                )) : (
-                  <div className="queue-item">
-                    <h3>No maps yet</h3>
-                    <div className="queue-meta">Start your first map above. The extension is optional for getting started.</div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
+            </section>
+          </div>
         </div>
       </div>
     );
