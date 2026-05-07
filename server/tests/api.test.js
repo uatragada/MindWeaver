@@ -8,6 +8,33 @@ import { createDb, initDb } from "../db.js";
 import { createApp } from "../app.js";
 import { requestStructuredJson } from "../openai.js";
 
+const FETCH_BLOCKED_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+  101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161,
+  179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563,
+  587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060,
+  5061, 6000, 6566, 6697, 10080
+]);
+
+function isFetchBlockedPort(port) {
+  return FETCH_BLOCKED_PORTS.has(port) || (port >= 6665 && port <= 6669);
+}
+
+async function listenOnFetchSafePort(server) {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    await new Promise((resolve) => server.listen(0, resolve));
+    const { port } = server.address();
+
+    if (!isFetchBlockedPort(port)) {
+      return port;
+    }
+
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  throw new Error("Unable to allocate a fetch-safe test port.");
+}
+
 function createClassificationSchema({ minConcepts = 1, maxConcepts = 8 } = {}) {
   return {
     type: "object",
@@ -319,8 +346,7 @@ async function startMockOllamaServer(options = {}) {
     }));
   });
 
-  await new Promise((resolve) => server.listen(0, resolve));
-  const { port } = server.address();
+  const port = await listenOnFetchSafePort(server);
 
   return {
     baseUrl: `http://127.0.0.1:${port}`,
@@ -345,8 +371,7 @@ async function startTestServer(options = {}) {
   });
 
   const server = createServer(app);
-  await new Promise((resolve) => server.listen(0, resolve));
-  const { port } = server.address();
+  const port = await listenOnFetchSafePort(server);
   const baseUrl = `http://127.0.0.1:${port}`;
 
   return {

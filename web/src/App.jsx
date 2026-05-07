@@ -1,10 +1,68 @@
 import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
+import {
+  ArchiveRestore,
+  BarChart3,
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  CircleHelp,
+  Download,
+  FileDown,
+  FileJson,
+  FileText,
+  GitBranch,
+  GraduationCap,
+  Home,
+  Import,
+  Layers,
+  Link2,
+  ListChecks,
+  Map as MapIcon,
+  Maximize2,
+  MessageSquare,
+  Network,
+  PanelLeftClose,
+  PanelRightClose,
+  Plus,
+  Puzzle,
+  RefreshCw,
+  Route,
+  Search,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Target,
+  Trash2,
+  Upload,
+  X,
+  XCircle
+} from "lucide-react";
 import SelectControl from "./components/controls/SelectControl.jsx";
 import GraphMiniMap from "./components/graph/GraphMiniMap.jsx";
 import MarkdownNotePreview from "./components/notes/MarkdownNotePreview.js";
 import MapOverviewCard from "./components/panels/MapOverviewCard.jsx";
 import MapStructurePanel from "./components/panels/MapStructurePanel.jsx";
+import {
+  ActionBar,
+  AppShell,
+  DrawerOpenButton,
+  EmptyState,
+  FieldGroup,
+  GraphToolbar,
+  IconButton,
+  MapTabs,
+  MetricStrip,
+  PanelHeader,
+  SegmentedControl,
+  StatusBanner,
+  TopCommandBar,
+  WorkspaceDrawer,
+  WorkspaceNav
+} from "./components/ui/Shell.jsx";
 import { useLocalStorageState } from "./hooks/useLocalStorageState.js";
 import { useSessionRoute } from "./hooks/useSessionRoute.js";
 import { API_BASE, fetchJson } from "./lib/api.js";
@@ -112,6 +170,8 @@ export default function App() {
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState([]);
   const [rightPanel, setRightPanel] = useState("inspector");
+  const [inspectorSection, setInspectorSection] = useState("overview");
+  const [importMode, setImportMode] = useState("manual");
   const [leftRailMinimized, setLeftRailMinimized] = useState(false);
   const [rightRailMinimized, setRightRailMinimized] = useState(true);
   const [mapTabsCollapsed, setMapTabsCollapsed] = useState(false);
@@ -1292,28 +1352,47 @@ export default function App() {
   const importIsTooLong = importContentLength > maxImportChars;
   const chatImportProviderLabel = CHAT_IMPORT_PROVIDER_OPTIONS.find((option) => option.value === chatImportProvider)?.label ?? "ChatGPT";
 
+  const deferGraphUpdate = useCallback((callback) => {
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(callback);
+      return;
+    }
+
+    callback();
+  }, []);
+
   const syncGraphViewport = useCallback(() => {
     if (!fgRef.current) return;
     const center = fgRef.current.centerAt();
     const zoom = fgRef.current.zoom();
-    setGraphViewport({
+    const nextViewport = {
       centerX: center.x,
       centerY: center.y,
       zoom
+    };
+
+    deferGraphUpdate(() => {
+      setGraphViewport((current) => (
+        Math.abs(current.centerX - nextViewport.centerX) < 0.5
+          && Math.abs(current.centerY - nextViewport.centerY) < 0.5
+          && Math.abs(current.zoom - nextViewport.zoom) < 0.01
+          ? current
+          : nextViewport
+      ));
     });
-  }, []);
+  }, [deferGraphUpdate]);
 
   const fitGraphToViewport = useCallback((duration = 260) => {
     if (!fgRef.current || !graphData.nodes.length) return;
-    const fitPadding = Math.max(104, Math.min(188, Math.round(graphSize.height * 0.26)));
+    const fitPadding = Math.max(72, Math.min(136, Math.round(graphSize.height * 0.18)));
     fgRef.current.zoomToFit(duration, fitPadding);
   }, [graphData.nodes.length, graphSize.height]);
 
   const finalizeGraphViewport = useCallback((duration = 260) => {
     fitGraphToViewport(duration);
     lastCompletedViewportFitKeyRef.current = graphViewportFitKey;
-    setIsGraphViewportReady(true);
-  }, [fitGraphToViewport, graphViewportFitKey]);
+    deferGraphUpdate(() => setIsGraphViewportReady(true));
+  }, [deferGraphUpdate, fitGraphToViewport, graphViewportFitKey]);
 
   useEffect(() => {
     if (!fgRef.current || !graphData.nodes.length) {
@@ -2680,6 +2759,17 @@ export default function App() {
     ctx.restore();
   }, [focusIsActive, focusTraversal, hideUnrelated, highlightedEdgeKeys, pathEdgeKeys, selectedNodeIdSet]);
 
+  const graphPresetOptions = GRAPH_VIEW_PRESET_OPTIONS.map((option) => ({
+    ...option,
+    icon: option.value === "overview"
+      ? Network
+      : option.value === "focused"
+        ? GitBranch
+        : option.value === "review"
+          ? ListChecks
+          : Puzzle
+  }));
+
   const mapTabsChrome = (
     <section className={`map-tabs-shell panel ${mapTabsCollapsed ? "is-collapsed" : ""}`}>
       <div className="map-tabs-row">
@@ -2705,7 +2795,7 @@ export default function App() {
               aria-label={`Close ${getMapName(session)} tab`}
               onClick={() => closeSessionTab(session.id)}
             >
-              ×
+              <X size={14} strokeWidth={2.4} aria-hidden="true" />
             </button>
           </div>
         ))}
@@ -2726,7 +2816,8 @@ export default function App() {
 
         {!mapTabsCollapsed && sessionTargetState.activeSession ? (
           <span className="map-tabs-target-pill">
-            {`⬤ ${getMapName(sessionTargetState.activeSession)}`}
+            <span className="map-tabs-target-dot" aria-hidden="true" />
+            {getMapName(sessionTargetState.activeSession)}
           </span>
         ) : null}
 
@@ -2737,11 +2828,9 @@ export default function App() {
           aria-label={mapTabsCollapsed ? "Expand map tabs" : "Collapse map tabs"}
           title={mapTabsCollapsed ? "Expand map tabs" : "Collapse map tabs"}
         >
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            {mapTabsCollapsed
-              ? <polyline points="6 9 12 15 18 9"/>
-              : <polyline points="18 15 12 9 6 15"/>}
-          </svg>
+          {mapTabsCollapsed
+            ? <ChevronDown size={14} strokeWidth={2.5} aria-hidden="true" />
+            : <ChevronUp size={14} strokeWidth={2.5} aria-hidden="true" />}
         </button>
       </div>
 
@@ -2759,157 +2848,132 @@ export default function App() {
   );
 
   const unifiedTopbar = (
-    <header className="workspace-topbar">
-      {/* ── Column 1: Maps (tabs + new map) ── */}
-      <div className="topbar-maps-group">
-        <button
-          type="button"
-          className="topbar-home"
-          onClick={() => navigateToSession(null)}
-          aria-label="All maps"
-          title="All maps"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
-          </svg>
-        </button>
-        {openTabSessions.map((session) => (
-          <div key={session.id} className={`topbar-tab ${sessionId === session.id ? "is-active" : ""}`}>
-            <button type="button" className="topbar-tab-main" onClick={() => openSessionTab(session.id)}>
-              {getMapName(session)}
-            </button>
-            <button
-              type="button"
-              className="topbar-tab-close"
-              onClick={() => closeSessionTab(session.id)}
-              aria-label={`Close ${getMapName(session)}`}
-            >
-              ×
-            </button>
-          </div>
-        ))}
+    <TopCommandBar>
+      <MapTabs>
+        <IconButton label="All maps" onClick={() => navigateToSession(null)} className="topbar-home">
+          <Home size={16} strokeWidth={2.2} />
+        </IconButton>
+        <div className="topbar-tab-strip">
+          {openTabSessions.map((session) => (
+            <div key={session.id} className={`topbar-tab ${sessionId === session.id ? "is-active" : ""}`}>
+              <button type="button" className="topbar-tab-main" onClick={() => openSessionTab(session.id)}>
+                {getMapName(session)}
+              </button>
+              <IconButton
+                className="topbar-tab-close"
+                label={`Close ${getMapName(session)}`}
+                onClick={() => closeSessionTab(session.id)}
+              >
+                <X size={13} strokeWidth={2.5} />
+              </IconButton>
+            </div>
+          ))}
+        </div>
         <form className="topbar-new-map" onSubmit={(event) => handleCreateSession(event, { fromTabs: true })}>
           <input
             className="topbar-new-input"
-            placeholder="New map…"
+            placeholder="New map..."
             value={tabComposerGoal}
             onChange={(event) => setTabComposerGoal(event.target.value)}
           />
-          <button className="topbar-new-btn" type="submit" disabled={isCreatingSession} aria-label="Create new map" title="Create new map">
-            +
-          </button>
+          <IconButton className="topbar-new-btn" type="submit" disabled={isCreatingSession} label="Create new map">
+            <Plus size={15} strokeWidth={2.4} />
+          </IconButton>
         </form>
-      </div>
+      </MapTabs>
 
-      {/* ── Column 2: Tools (search | views | direction filters) ── */}
-      {sessionId && (
-        <div className="topbar-tools-group">
-          <div className="topbar-section topbar-search-section">
-            <input
-              className="topbar-search-input"
-              placeholder="Search nodes…"
-              value={nodeSearch}
-              onChange={(event) => setNodeSearch(event.target.value)}
-            />
-            <button className="topbar-btn" type="button" onClick={handleGraphSearch} disabled={isSearchingGraph || !nodeSearch.trim()}>
-              {isSearchingGraph ? "…" : "Find"}
-            </button>
-            <button className="topbar-btn topbar-fit-btn" type="button" onClick={handleFocusGraph} title="Fit graph to viewport" aria-label="Fit graph to viewport">
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
-              </svg>
-            </button>
-          </div>
-          <div className="topbar-divider" />
-          <div className="topbar-section topbar-filter-section">
-            <SelectControl
-              className="topbar-type-filter"
-              value={nodeTypeFilter}
-              onChange={setNodeTypeFilter}
-              options={NODE_TYPE_OPTIONS}
-              ariaLabel="Filter node type"
-            />
-            <SelectControl
-              className="topbar-type-filter"
-              value={graphColorMode}
-              onChange={(value) => setGraphColorMode(value)}
-              options={GRAPH_COLOR_MODE_OPTIONS}
-              ariaLabel="Graph color mode"
-            />
-          </div>
-          <div className="topbar-divider" />
-          <div className="topbar-section topbar-views-section">
-            {GRAPH_VIEW_PRESET_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className={`topbar-view-chip ${graphPreset === option.value ? "is-active" : ""}`}
-                onClick={() => handleApplyGraphPreset(option.value)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <div className="topbar-divider" />
-          <div className="topbar-section topbar-focus-section">
-            <span className="topbar-focus-label">Focus</span>
-            <div className="topbar-direction-toggle">
-              {[
-                { value: "upstream", label: "↑ Up", title: "Show upstream ancestors" },
-                { value: "both", label: "↕ Both", title: "Show upstream and downstream" },
-                { value: "downstream", label: "↓ Down", title: "Show downstream descendants" },
-              ].map(({ value, label, title }) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`topbar-dir-btn${focusMode === value ? " is-active" : ""}`}
-                  title={title}
-                  onClick={() => {
-                    const next = focusMode === value ? "none" : value;
-                    setFocusMode(next);
-                    if (next === "none") setHideUnrelated(false);
-                    setGraphPreset("custom");
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            {focusMode !== "none" && (
-              <SelectControl
-                className="topbar-focus-depth"
-                value={focusDepth}
-                onChange={(value) => {
-                  setFocusDepth(value);
-                  setGraphPreset("custom");
-                }}
-                options={GRAPH_FOCUS_DEPTH_OPTIONS}
-                ariaLabel="Focus depth"
-              />
-            )}
-          </div>
+      <GraphToolbar>
+        <div className="topbar-search-section">
+          <Search size={15} strokeWidth={2.1} aria-hidden="true" />
+          <input
+            className="topbar-search-input"
+            placeholder="Search nodes, sources, links..."
+            value={nodeSearch}
+            onChange={(event) => setNodeSearch(event.target.value)}
+          />
+          <button className="topbar-btn" type="button" onClick={handleGraphSearch} disabled={isSearchingGraph || !nodeSearch.trim()}>
+            {isSearchingGraph ? "Finding..." : "Find"}
+          </button>
+          <IconButton className="topbar-fit-btn" label="Fit graph to viewport" onClick={handleFocusGraph}>
+            <Maximize2 size={14} strokeWidth={2.3} />
+          </IconButton>
         </div>
-      )}
+        <div className="topbar-filter-section">
+          <SelectControl
+            className="topbar-type-filter"
+            value={nodeTypeFilter}
+            onChange={setNodeTypeFilter}
+            options={NODE_TYPE_OPTIONS}
+            ariaLabel="Filter node type"
+          />
+          <SelectControl
+            className="topbar-type-filter"
+            value={graphColorMode}
+            onChange={(value) => setGraphColorMode(value)}
+            options={GRAPH_COLOR_MODE_OPTIONS}
+            ariaLabel="Graph color mode"
+          />
+        </div>
+        <SegmentedControl
+          className="topbar-preset-control"
+          options={graphPresetOptions}
+          value={graphPreset}
+          onChange={handleApplyGraphPreset}
+          ariaLabel="Graph view presets"
+        />
+        <div className="topbar-focus-section">
+          <span className="topbar-focus-label">Focus</span>
+          <SegmentedControl
+            className="topbar-focus-control"
+            value={focusMode}
+            ariaLabel="Graph focus direction"
+            options={[
+              { value: "upstream", label: "Up", icon: ChevronLeft },
+              { value: "both", label: "Both", icon: Route },
+              { value: "downstream", label: "Down", icon: ChevronRight }
+            ]}
+            onChange={(value) => {
+              const next = focusMode === value ? "none" : value;
+              setFocusMode(next);
+              if (next === "none") setHideUnrelated(false);
+              setGraphPreset("custom");
+            }}
+          />
+          {focusMode !== "none" ? (
+            <SelectControl
+              className="topbar-focus-depth"
+              value={focusDepth}
+              onChange={(value) => {
+                setFocusDepth(value);
+                setGraphPreset("custom");
+              }}
+              options={GRAPH_FOCUS_DEPTH_OPTIONS}
+              ariaLabel="Focus depth"
+            />
+          ) : null}
+        </div>
+      </GraphToolbar>
 
-      {/* ── Column 3: Status ── */}
       <div className="topbar-end">
-        {sessionId && (
-          <span className="topbar-status-pill">
-            {isLoadingGraph ? "Loading…" : `${graphData.nodes.length} nodes`}
-            <span className="topbar-dot">·</span>
-            {graphState?.session?.endedAt ? "ended" : "live"}
-            <span className="topbar-dot">·</span>
-            {graphState?.artifacts?.length ?? 0} src
-          </span>
-        )}
-        {sessionTargetState.activeSession && (
-          <span className="topbar-target-pill">
+        <span className="topbar-status-pill">
+          {isLoadingGraph ? "Loading" : `${graphData.nodes.length} nodes`}
+          <span>{graphState?.session?.endedAt ? "ended" : "live"}</span>
+          <span>{graphState?.artifacts?.length ?? 0} src</span>
+        </span>
+        {sessionTargetState.activeSession ? (
+          <button
+            type="button"
+            className="topbar-target-pill"
+            onClick={() => openRightPanel("map")}
+            title={getMapName(sessionTargetState.activeSession)}
+            aria-label={`Open map settings for ${getMapName(sessionTargetState.activeSession)}`}
+          >
             <span className="topbar-target-dot" />
-            {getMapName(sessionTargetState.activeSession)}
-          </span>
-        )}
+            <span className="topbar-target-name">Map</span>
+          </button>
+        ) : null}
       </div>
-    </header>
+    </TopCommandBar>
   );
 
   if (!sessionId) {
@@ -3029,155 +3093,64 @@ export default function App() {
     leftRailMinimized ? "is-left-minimized" : "",
     rightRailMinimized ? "is-right-minimized" : ""
   ].filter(Boolean).join(" ");
+  const rightPanelPurpose = {
+    inspector: selectedNode ? "Edit, connect, and review the selected node." : "Select a graph node to inspect and clean up.",
+    assistant: "Ask source-grounded questions against this map.",
+    actions: "Use recommended next moves from weak evidence, review dates, and gaps.",
+    review: "Approve useful concepts and reject noisy classifier output.",
+    plan: "Follow a realistic next study session built from the map.",
+    progress: "Track mastery, evidence, and long-term learning health.",
+    import: "Bring in notes, transcripts, chat history, docs, and reading lists.",
+    gaps: "Find missing concepts and choose the next learning move.",
+    quiz: "Generate short review loops and feed results back into confidence.",
+    map: "Manage structure, map health, privacy, exports, and local data."
+  };
+  const workspaceItems = [
+    { id: "inspector", label: "Inspector", icon: Network },
+    { id: "assistant", label: "Assistant", icon: Bot },
+    { id: "actions", label: "Actions", icon: Sparkles, count: graphState?.recommendations?.length || null },
+    { id: "review", label: "Review", icon: ListChecks, count: graphState?.reviewQueue?.length || null },
+    { id: "plan", label: "Study", icon: GraduationCap },
+    { id: "progress", label: "Progress", icon: BarChart3 },
+    { id: "import", label: "Import", icon: Upload },
+    { id: "gaps", label: "Gaps", icon: Puzzle, count: gapSummary?.gaps?.length || null },
+    { id: "quiz", label: "Quiz", icon: CircleHelp, count: quizState.quiz?.length || null },
+    { id: "map", label: "Map", icon: Settings }
+  ];
+  const inspectorSectionOptions = [
+    { value: "overview", label: "Overview", icon: Target },
+    { value: "notes", label: "Notes", icon: FileText },
+    { value: "relationships", label: "Relations", icon: Link2 },
+    { value: "evidence", label: "Evidence", icon: ShieldCheck },
+    { value: "history", label: "History", icon: ArchiveRestore }
+  ];
+  const importModeOptions = [
+    { value: "manual", label: "Manual", icon: FileText },
+    { value: "chat", label: "Chat History", icon: MessageSquare },
+    { value: "bulk", label: "Bulk", icon: Layers }
+  ];
+  const selectedNodeMetricItems = selectedNode ? [
+    { label: "Confidence", value: `${Math.round((selectedNode.confidence ?? 0) * 100)}%` },
+    { label: "Evidence", value: selectedNode.evidenceCount ?? selectedNode.sources?.length ?? 0 },
+    { label: "Incoming", value: selectedNodeConnections.upstream.length },
+    { label: "Review", value: describeReviewDate(selectedNode.nextReviewAt) }
+  ] : [];
 
   return (
-    <div className="page-shell is-workspace">
+    <AppShell className="page-shell is-workspace">
       {unifiedTopbar}
       <div className={appShellClassName}>
         <aside className={`left-rail ${leftRailMinimized ? "is-minimized" : ""}`} aria-label="Map navigation">
-          <section className="panel workspace-nav">
-            <div className="panel-heading-row">
-              <p className="panel-title">Workspaces</p>
-              <button className="rail-toggle-button" type="button" onClick={() => setLeftRailMinimized(true)} aria-label="Close workspaces">
-                ✕
-              </button>
-            </div>
-            <div className="workspace-list">
-              <button className={`workspace-button ${rightPanel === "inspector" ? "is-active" : ""}`} onClick={() => openRightPanel("inspector")}>
-                <strong>Inspector</strong>
-                <span>{selectedNode ? selectedNode.label : "Select and clean up a node"}</span>
-              </button>
-              <button className={`workspace-button ${rightPanel === "assistant" ? "is-active" : ""}`} onClick={() => openRightPanel("assistant")}>
-                <strong>Graph Assistant</strong>
-                <span>Ask questions against this map</span>
-              </button>
-              <button className={`workspace-button ${rightPanel === "actions" ? "is-active" : ""}`} onClick={() => openRightPanel("actions")}>
-                <strong>Next Actions</strong>
-                <span>{graphState?.recommendations?.length ?? 0} recommendations</span>
-              </button>
-              <button className={`workspace-button ${rightPanel === "review" ? "is-active" : ""}`} onClick={() => openRightPanel("review")}>
-                <strong>Review Queue</strong>
-                <span>{graphState?.reviewQueue?.length ?? 0} concepts waiting</span>
-              </button>
-              <button className={`workspace-button ${rightPanel === "plan" ? "is-active" : ""}`} onClick={() => openRightPanel("plan")}>
-                <strong>{graphState?.studyPlan?.title ?? "Study Plan"}</strong>
-                <span>{graphState?.studyPlan?.totalMinutes ?? 15} minute next session</span>
-              </button>
-              <button className={`workspace-button ${rightPanel === "progress" ? "is-active" : ""}`} onClick={() => openRightPanel("progress")}>
-                <strong>Progress Report</strong>
-                <span>{progressState?.longTerm?.sessionCount ?? 0} maps tracked</span>
-              </button>
-              <button className={`workspace-button ${rightPanel === "import" ? "is-active" : ""}`} onClick={() => openRightPanel("import")}>
-                <strong>Import Sources</strong>
-                <span>Notes, transcripts, docs, and highlights</span>
-              </button>
-              <button className={`workspace-button ${rightPanel === "gaps" ? "is-active" : ""}`} onClick={() => openRightPanel("gaps")}>
-                <strong>Gap Analysis</strong>
-                <span>{gapSummary?.gaps?.length ? `${gapSummary.gaps.length} gaps found` : "Find missing concepts"}</span>
-              </button>
-              <button className={`workspace-button ${rightPanel === "quiz" ? "is-active" : ""}`} onClick={() => openRightPanel("quiz")}>
-                <strong>Quiz Loop</strong>
-                <span>{quizState.quiz?.length ? `${quizState.quiz.length} questions ready` : "Generate spaced review"}</span>
-              </button>
-            </div>
-          </section>
-
-          <MapStructurePanel
-            mapNameDraft={mapNameDraft}
-            onMapNameChange={(value) => {
-              setIsEditingMapName(true);
-              setMapNameDraft(value);
-            }}
-            onSaveMapName={handleRenameMap}
-            isRenamingMap={isRenamingMap}
-            hasMapNameChanges={hasMapNameChanges}
-            quickAddNodeType={quickAddNodeType}
-            onQuickAddNodeTypeChange={setQuickAddNodeType}
-            quickAddNodeLabel={goalNodeDraft}
-            onQuickAddNodeLabelChange={setGoalNodeDraft}
-            onCreateNode={handleCreateQuickAddNode}
-            isCreatingNode={isCreatingGoalNode}
-            quickAddNodeTypeOptions={NODE_TYPE_OPTIONS.filter((option) => option.value !== "all")}
-            primaryGoalNode={primaryGoalNode}
-            isRefiningMap={isRefiningMap}
-            onRefineMap={handleRefineMap}
-            canUseLlm={canUseSelectedLlm}
-            llmProviderLabel={llmSettings.provider === "local" ? `${activeLocalModelLabel} via Ollama` : "OpenAI"}
-            llmStatusMessage={llmStatusMessage}
-            nodeCount={graphData.nodes.length}
+          <div className="workspace-nav-header">
+            <IconButton label="Collapse workspace navigation" onClick={() => setLeftRailMinimized(true)}>
+              <PanelLeftClose size={17} strokeWidth={2.2} />
+            </IconButton>
+          </div>
+          <WorkspaceNav
+            items={workspaceItems}
+            activeId={rightPanel}
+            onSelect={(panel) => openRightPanel(panel)}
           />
-
-          <MapOverviewCard
-            mapName={getMapName(graphState?.session)}
-            nodeCount={graphData.nodes.length}
-            sourceCount={graphState?.artifacts?.length ?? 0}
-            reviewCount={graphState?.reviewQueue?.length ?? 0}
-            onRunGapAnalysis={() => {
-              openRightPanel("gaps");
-              handleRunGapAnalysis();
-            }}
-            isLoadingGaps={isLoadingGaps}
-            canRunGapAnalysis={Boolean(primaryGoalNode?.id)}
-            onGenerateQuiz={() => {
-              openRightPanel("quiz");
-              handleGenerateQuiz();
-            }}
-            isLoadingQuiz={isLoadingQuiz}
-            onEndSession={handleEndSession}
-            isEndingSession={isEndingSession}
-            isEnded={Boolean(graphState?.session?.endedAt)}
-            statusMessage={statusMessage}
-            errorMessage={errorMessage}
-          />
-
-          <section className="panel safety-panel">
-            <p className="panel-title">Privacy & Control</p>
-            <p className="panel-subtitle">
-              Local storage is used for the graph. AI tasks currently follow the homepage provider setting: {activeLlmProviderLabel}{llmSettings.provider === "local" ? ` (${activeLocalModelLabel})` : ""}. Source classification reads up to {contentLimitChars.toLocaleString()} characters per source.
-            </p>
-            <div className="queue-actions">
-              <button className="small-button" onClick={() => navigateToSession(null)}>All Maps</button>
-              <button className="small-button" disabled={isExporting} onClick={() => handleExport("markdown")}>
-                {isExporting ? "Exporting..." : "Export Markdown"}
-              </button>
-              <button className="small-button" disabled={isExporting} onClick={() => handleExport("json")}>
-                Export JSON
-              </button>
-              <button className="small-button" type="button" onClick={handleDownloadBackup}>
-                Backup Data
-              </button>
-              <label className={`small-button file-button ${isRestoringBackup ? "is-disabled" : ""}`}>
-                {isRestoringBackup ? "Restoring..." : "Restore Backup"}
-                <input type="file" accept=".json,application/json" disabled={isRestoringBackup} onChange={handleRestoreBackup} />
-              </label>
-              <button className="small-button is-reject" disabled={isDeletingSession} onClick={handleDeleteSession}>
-                {isDeletingSession ? "Deleting..." : "Delete This Map"}
-              </button>
-            </div>
-          </section>
-
-          <section className="panel health-panel">
-            <p className="panel-title">Map Health</p>
-            <div className="health-score">
-              <strong>{graphState?.health?.score ?? 0}</strong>
-              <span>/ 100</span>
-            </div>
-            <div className="health-bars">
-              <div>
-                <span>Evidence</span>
-                <div className="confidence-bar"><div className="confidence-fill" style={{ width: `${Math.round((graphState?.health?.evidenceCoverage ?? 0) * 100)}%` }} /></div>
-              </div>
-              <div>
-                <span>Reviewed</span>
-                <div className="confidence-bar"><div className="confidence-fill" style={{ width: `${Math.round((graphState?.health?.reviewCoverage ?? 0) * 100)}%` }} /></div>
-              </div>
-            </div>
-            <div className="review-list compact-list">
-              {(graphState?.health?.risks?.length ? graphState.health.risks : ["Keep adding source-backed concepts and reviewing them over time."]).slice(0, 3).map((risk) => (
-                <div key={risk} className="mini-note">{risk}</div>
-              ))}
-            </div>
-          </section>
         </aside>
 
         <main className="graph-card">
@@ -3185,14 +3158,10 @@ export default function App() {
             <div className="drawer-backdrop" onClick={() => { setLeftRailMinimized(true); setRightRailMinimized(true); }} />
           )}
           {leftRailMinimized && (
-            <button className="drawer-open-left" type="button" onClick={() => setLeftRailMinimized(false)} aria-label="Open workspaces panel">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-            </button>
+            <DrawerOpenButton side="left" label="Open workspaces panel" onClick={() => setLeftRailMinimized(false)} />
           )}
           {rightRailMinimized && (
-            <button className="drawer-open-right" type="button" onClick={() => setRightRailMinimized(false)} aria-label={`Open ${rightPanelLabel}`}>
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-            </button>
+            <DrawerOpenButton side="right" label={`Open ${rightPanelLabel}`} onClick={() => setRightRailMinimized(false)} />
           )}
           {(breadcrumbNodes.length > 1 || selectedNode || selectedGroupNodes.length > 1) && (
             <div className="graph-context-strip">
@@ -3383,13 +3352,124 @@ export default function App() {
         </main>
 
         <aside ref={rightRailRef} className={`right-rail ${rightRailMinimized ? "is-minimized" : ""}`} aria-label="Workspace details">
-          <section className="panel scroll-panel workspace-panel">
-            <div className="workspace-panel-chrome">
-              <span>{rightPanelLabel}</span>
-              <button className="rail-toggle-button" type="button" onClick={() => setRightRailMinimized(true)} aria-label="Close right panel">
-                ✕
-              </button>
-            </div>
+          <WorkspaceDrawer
+            title={rightPanelLabel}
+            purpose={rightPanelPurpose[rightPanel]}
+            onClose={() => setRightRailMinimized(true)}
+          >
+            {rightPanel === "map" ? (
+              <>
+                <PanelHeader
+                  eyebrow="Map"
+                  title={getMapName(graphState?.session)}
+                  description="Manage structure, map health, privacy settings, exports, and local data."
+                />
+                <MetricStrip
+                  items={[
+                    { label: "Nodes", value: graphData.nodes.length },
+                    { label: "Sources", value: graphState?.artifacts?.length ?? 0 },
+                    { label: "Review", value: graphState?.reviewQueue?.length ?? 0 },
+                    { label: "Health", value: `${graphState?.health?.score ?? 0}/100` }
+                  ]}
+                />
+                <MapStructurePanel
+                  mapNameDraft={mapNameDraft}
+                  onMapNameChange={(value) => {
+                    setIsEditingMapName(true);
+                    setMapNameDraft(value);
+                  }}
+                  onSaveMapName={handleRenameMap}
+                  isRenamingMap={isRenamingMap}
+                  hasMapNameChanges={hasMapNameChanges}
+                  quickAddNodeType={quickAddNodeType}
+                  onQuickAddNodeTypeChange={setQuickAddNodeType}
+                  quickAddNodeLabel={goalNodeDraft}
+                  onQuickAddNodeLabelChange={setGoalNodeDraft}
+                  onCreateNode={handleCreateQuickAddNode}
+                  isCreatingNode={isCreatingGoalNode}
+                  quickAddNodeTypeOptions={NODE_TYPE_OPTIONS.filter((option) => option.value !== "all")}
+                  primaryGoalNode={primaryGoalNode}
+                  isRefiningMap={isRefiningMap}
+                  onRefineMap={handleRefineMap}
+                  canUseLlm={canUseSelectedLlm}
+                  llmProviderLabel={llmSettings.provider === "local" ? `${activeLocalModelLabel} via Ollama` : "OpenAI"}
+                  llmStatusMessage={llmStatusMessage}
+                  nodeCount={graphData.nodes.length}
+                />
+                <MapOverviewCard
+                  mapName={getMapName(graphState?.session)}
+                  nodeCount={graphData.nodes.length}
+                  sourceCount={graphState?.artifacts?.length ?? 0}
+                  reviewCount={graphState?.reviewQueue?.length ?? 0}
+                  onRunGapAnalysis={() => {
+                    openRightPanel("gaps");
+                    handleRunGapAnalysis();
+                  }}
+                  isLoadingGaps={isLoadingGaps}
+                  canRunGapAnalysis={Boolean(primaryGoalNode?.id)}
+                  onGenerateQuiz={() => {
+                    openRightPanel("quiz");
+                    handleGenerateQuiz();
+                  }}
+                  isLoadingQuiz={isLoadingQuiz}
+                  onEndSession={handleEndSession}
+                  isEndingSession={isEndingSession}
+                  isEnded={Boolean(graphState?.session?.endedAt)}
+                  statusMessage={statusMessage}
+                  errorMessage={errorMessage}
+                />
+                <section className="summary-card map-control-card">
+                  <h3>Privacy & local data</h3>
+                  <div className="queue-meta">
+                    Local storage is used for the graph. AI tasks follow the shared provider setting: {activeLlmProviderLabel}{llmSettings.provider === "local" ? ` (${activeLocalModelLabel})` : ""}. Source classification reads up to {contentLimitChars.toLocaleString()} characters per source.
+                  </div>
+                  <ActionBar>
+                    <button className="small-button" onClick={() => navigateToSession(null)}>
+                      <Home size={14} aria-hidden="true" /> All Maps
+                    </button>
+                    <button className="small-button" disabled={isExporting} onClick={() => handleExport("markdown")}>
+                      <FileDown size={14} aria-hidden="true" /> {isExporting ? "Exporting..." : "Export Markdown"}
+                    </button>
+                    <button className="small-button" disabled={isExporting} onClick={() => handleExport("json")}>
+                      <FileJson size={14} aria-hidden="true" /> Export JSON
+                    </button>
+                    <button className="small-button" type="button" onClick={handleDownloadBackup}>
+                      <Download size={14} aria-hidden="true" /> Backup Data
+                    </button>
+                    <label className={`small-button file-button ${isRestoringBackup ? "is-disabled" : ""}`}>
+                      <ArchiveRestore size={14} aria-hidden="true" /> {isRestoringBackup ? "Restoring..." : "Restore Backup"}
+                      <input type="file" accept=".json,application/json" disabled={isRestoringBackup} onChange={handleRestoreBackup} />
+                    </label>
+                    <button className="small-button is-reject" disabled={isDeletingSession} onClick={handleDeleteSession}>
+                      <Trash2 size={14} aria-hidden="true" /> {isDeletingSession ? "Deleting..." : "Delete This Map"}
+                    </button>
+                  </ActionBar>
+                </section>
+                <section className="summary-card map-control-card">
+                  <h3>Map Health</h3>
+                  <div className="health-score">
+                    <strong>{graphState?.health?.score ?? 0}</strong>
+                    <span>/ 100</span>
+                  </div>
+                  <div className="health-bars">
+                    <div>
+                      <span>Evidence</span>
+                      <div className="confidence-bar"><div className="confidence-fill" style={{ width: `${Math.round((graphState?.health?.evidenceCoverage ?? 0) * 100)}%` }} /></div>
+                    </div>
+                    <div>
+                      <span>Reviewed</span>
+                      <div className="confidence-bar"><div className="confidence-fill" style={{ width: `${Math.round((graphState?.health?.reviewCoverage ?? 0) * 100)}%` }} /></div>
+                    </div>
+                  </div>
+                  <div className="review-list compact-list">
+                    {(graphState?.health?.risks?.length ? graphState.health.risks : ["Keep adding source-backed concepts and reviewing them over time."]).slice(0, 3).map((risk) => (
+                      <div key={risk} className="mini-note">{risk}</div>
+                    ))}
+                  </div>
+                </section>
+              </>
+            ) : null}
+
             {rightPanel === "plan" ? (
               <>
                 <div className="workspace-panel-header">
@@ -3540,6 +3620,14 @@ export default function App() {
                   <h2>Add source material</h2>
                   <p className="panel-subtitle">Bring in manual notes, or bootstrap a map from the user's ChatGPT or Claude history with structured JSON.</p>
                 </div>
+                <SegmentedControl
+                  className="drawer-mode-tabs"
+                  options={importModeOptions}
+                  value={importMode}
+                  onChange={setImportMode}
+                  ariaLabel="Import mode"
+                />
+                {importMode === "chat" ? (
                 <div className="summary-card onboarding-import-card">
                   <h3>Import Chat History Context</h3>
                   <div className="queue-meta">
@@ -3615,6 +3703,8 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                ) : null}
+                {importMode === "manual" ? (
                 <div className="summary-card">
                   <h3>Manual Source Import</h3>
                   <div className="queue-meta">Paste notes, transcripts, docs, or extracted text directly into the current map.</div>
@@ -3643,6 +3733,8 @@ export default function App() {
                     </button>
                   </form>
                 </div>
+                ) : null}
+                {importMode === "bulk" ? (
                 <div className="summary-card">
                   <h3>Bulk Markdown / Reading List Import</h3>
                   <div className="queue-meta">Paste multiple notes or saved-reading extracts. Separate each item with a line containing ---.</div>
@@ -3658,6 +3750,7 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                ) : null}
                 <div className="review-list workspace-list-large">
                   {(graphState?.artifacts ?? []).slice(-4).reverse().map((artifact) => (
                     <div key={artifact.id} className="queue-item">
@@ -3766,7 +3859,7 @@ export default function App() {
               <>
             <p className="panel-title">Inspector</p>
             {selectedNode ? (
-              <>
+              <div className={`inspector-panel-layout is-${inspectorSection}`}>
                 <div className="inspector-header">
                   <span className="type-pill">{selectedNode.type}</span>
                   <h2 style={{ margin: 0 }}>{selectedNode.label}</h2>
@@ -3779,14 +3872,22 @@ export default function App() {
                     </div>
                   ) : null}
                 </div>
-                <div className="confidence-row">
+                <SegmentedControl
+                  className="drawer-mode-tabs"
+                  options={inspectorSectionOptions}
+                  value={inspectorSection}
+                  onChange={setInspectorSection}
+                  ariaLabel="Inspector sections"
+                />
+                <MetricStrip items={selectedNodeMetricItems} />
+                <div className="confidence-row inspector-overview-card">
                   <span className="muted-copy">Confidence</span>
                   <div className="confidence-bar">
                     <div className="confidence-fill" style={{ width: `${Math.round((selectedNode.confidence ?? 0) * 100)}%` }} />
                   </div>
                   <strong>{Math.round((selectedNode.confidence ?? 0) * 100)}%</strong>
                 </div>
-                <div className="metadata-grid">
+                <div className="metadata-grid inspector-overview-card">
                   <div>
                     <strong>Created</strong>
                     <span>{selectedNode.createdAt ? new Date(selectedNode.createdAt).toLocaleDateString() : "Unknown"}</span>
@@ -3820,7 +3921,7 @@ export default function App() {
                     <span>{describeReviewDate(selectedNode.nextReviewAt)}</span>
                   </div>
                 </div>
-                <div className="summary-card">
+                <div className="summary-card inspector-overview-card">
                   <h3>Path & Workflow</h3>
                   <div className="queue-meta">
                     {whyThisHereSummary?.breadcrumb
@@ -3857,7 +3958,7 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                <div className="summary-card">
+                <div className="summary-card inspector-overview-card">
                   <h3>Why this exists</h3>
                   <div className="queue-meta">{selectedNode.whyThisExists || selectedNode.description || "This node came from the current map and can be refined with stronger evidence or cleaner relationships."}</div>
                   {whyThisHereSummary ? (
@@ -3868,7 +3969,7 @@ export default function App() {
                     </div>
                   ) : null}
                 </div>
-                <div className="summary-card">
+                <div className="summary-card inspector-notes-card">
                   <div className="node-note-card-header">
                     <div>
                       <h3>Node Notes</h3>
@@ -3898,7 +3999,7 @@ export default function App() {
                     <div className="queue-meta">Editing this note in fullscreen.</div>
                   ) : renderNodeNoteEditor("inline")}
                 </div>
-                <div className="summary-card">
+                <div className="summary-card inspector-overview-card">
                   <h3>Clean Up This Node</h3>
                   <div className="queue-meta">Fix classifier labels, add your own summary, or mark mastery after review. Edits stay local and are recorded in the timeline.</div>
                   <div className="import-form">
@@ -3983,7 +4084,7 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-                <div className="inspector-actions">
+                <div className="inspector-actions inspector-overview-card">
                   <button className="ghost-button" type="button" onClick={handleToggleNodeNoteEditor}>
                     {nodeNoteActionLabel}
                   </button>
@@ -3993,8 +4094,8 @@ export default function App() {
                     {isLearningMore ? "Generating..." : "Explain This"}
                   </button>
                 </div>
-                {learnMoreCopy ? <div className="learn-more-copy">{learnMoreCopy}</div> : null}
-                <div className="summary-card">
+                {learnMoreCopy ? <div className="learn-more-copy inspector-overview-card">{learnMoreCopy}</div> : null}
+                <div className="summary-card inspector-relationships-card">
                   <h3>Relationships</h3>
                   <div className="relationship-list">
                     {[...selectedNodeConnections.upstream, ...selectedNodeConnections.downstream].length ? [...selectedNodeConnections.upstream, ...selectedNodeConnections.downstream].map((entry) => (
@@ -4036,7 +4137,7 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                <div className="summary-card">
+                <div className="summary-card inspector-relationships-card">
                   <h3>{selectedGroupNodes.length > 1 ? "Selected Concept Bridge" : "Concept Bridge"}</h3>
                   <div className="queue-meta">
                     {selectedGroupNodes.length > 1
@@ -4092,7 +4193,7 @@ export default function App() {
                     </div>
                   ) : null}
                 </div>
-                <div className="summary-card">
+                <div className="summary-card inspector-history-card">
                   <h3>Activity Timeline</h3>
                   <div className="timeline-list">
                     {selectedNode.history?.length ? selectedNode.history.map((event) => (
@@ -4103,7 +4204,7 @@ export default function App() {
                     )) : <div className="queue-meta">No activity has been recorded for this node yet.</div>}
                   </div>
                 </div>
-                <div className="evidence-list">
+                <div className="evidence-list inspector-evidence-card">
                   {selectedNode.sources?.length ? selectedNode.sources.map((source) => (
                     <div key={`${source.artifactId ?? source.url}-${source.sessionId}`} className="evidence-item">
                       <a className="evidence-link" href={source.url} target="_blank" rel="noreferrer">
@@ -4118,7 +4219,7 @@ export default function App() {
                     </div>
                   )) : <div className="queue-item"><h3>No evidence yet</h3><div className="queue-meta">This node exists in the graph, but no direct source evidence has been attached yet.</div></div>}
                 </div>
-              </>
+              </div>
             ) : (
               <div className="inspector-empty">
                 <div>
@@ -4129,7 +4230,7 @@ export default function App() {
             )}
               </>
             ) : null}
-            </section>
+          </WorkspaceDrawer>
         </aside>
         {isNodeNoteFullscreen && selectedNode ? (
           <div className="node-note-fullscreen-overlay" role="dialog" aria-modal="true" aria-label={`Fullscreen note editor for ${selectedNode.label}`}>
@@ -4154,6 +4255,6 @@ export default function App() {
           </div>
         ) : null}
       </div>
-    </div>
+    </AppShell>
   );
 }
