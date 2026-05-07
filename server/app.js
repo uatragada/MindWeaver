@@ -82,6 +82,7 @@ export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, stati
 
   const app = express();
   const defaultJsonParser = express.json({ limit: "2mb" });
+  const restoreJsonParser = express.json({ limit: "50mb" });
   const enqueuePageSave = createSequentialTaskQueue();
   const buildRequestLlmRuntime = (rawSelection) => ({
     openaiClient,
@@ -102,6 +103,11 @@ export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, stati
     }
   }));
   app.use((req, res, next) => {
+    if (req.method === "POST" && req.path === "/api/restore") {
+      restoreJsonParser(req, res, next);
+      return;
+    }
+
     if (req.method === "POST" && req.path === "/api/import-chat-history") {
       let rawBody = "";
       req.setEncoding("utf8");

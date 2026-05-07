@@ -2707,6 +2707,67 @@ test("local production controls support backup, restore, node edits, merges, and
   }
 });
 
+test("POST /api/restore accepts large local backup payloads", async () => {
+  const ctx = await startTestServer();
+
+  try {
+    const sessionId = "large-restore-session";
+    const largeContent = "Large restore source. ".repeat(120000);
+    const backup = {
+      app: "MindWeaver",
+      version: 1,
+      exportedAt: Date.now(),
+      data: {
+        sessions: [
+          {
+            id: sessionId,
+            startedAt: Date.now(),
+            endedAt: null,
+            goal: "Large restore map",
+            workspaceId: "local-workspace",
+            ownerId: "local-user"
+          }
+        ],
+        goals: [],
+        nodes: [],
+        edges: [],
+        verifications: [],
+        artifacts: [
+          {
+            id: "artifact:large-restore-source",
+            sessionId,
+            sourceType: "note",
+            title: "Large restore source",
+            url: "",
+            content: largeContent,
+            contentLength: largeContent.length,
+            createdAt: Date.now()
+          }
+        ],
+        users: [],
+        workspaces: [],
+        reports: [],
+        preferences: {}
+      }
+    };
+
+    const restoreResponse = await fetch(`${ctx.baseUrl}/api/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true, backup })
+    });
+    const restore = await restoreResponse.json();
+
+    assert.equal(restoreResponse.status, 200);
+    assert.equal(restore.ok, true);
+    assert.equal(restore.counts.sessions, 1);
+    assert.equal(restore.counts.artifacts, 1);
+    assert.equal(ctx.db.data.artifacts[0].content.length, largeContent.length);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test("POST /api/restore collapses exact semantic duplicates across roles", async () => {
   const ctx = await startTestServer();
 

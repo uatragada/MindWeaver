@@ -22,12 +22,15 @@
 - Hardened the server test harness against browser-blocked ephemeral ports after the root suite hit an unlucky `fetch failed: bad port` allocation.
 - Completed browser QA screenshots for homepage, desktop workspace, Map drawer, Review drawer, Inspector, Import drawer, and mobile/narrow workspace in `output/playwright/`.
 - Fixed visual QA findings from screenshots: preserved the original palette, removed the added blue shell tint, stopped top command bar overlap on narrow screens, kept the right drawer beside the compact rail on mobile, wrapped long map tab names instead of clipping them, removed ForceGraph console warnings by deferring viewport state updates, and tightened graph fit padding so labels remain readable.
+- Ran full visual QA across homepage provider switching, start/demo/recent maps, graph search/presets/focus/minimap/legend, every drawer panel, Inspector tabs, notes fullscreen, review actions, gap/quiz flows, exports, backup/restore, end/delete, and mobile/narrow layout.
+- Fixed visual QA findings from the full pass: hidden the homepage map-tabs scrollbar, raised `/api/restore` payload capacity for real local backups, added a large-backup restore regression test, reduced remaining pill controls to the requested 8px radius, and tightened topbar filter flex rules so graph controls no longer protrude at 1440px or mobile widths.
 
 ## QA Ledger
 
 - Unit baseline: passing before implementation.
 - `npm --prefix web test`: passing, 26/26.
+- `npm test`: passing, 40/40.
 - `npm run test:extension:unit`: passing, 13/13.
-- `npm test`: passing, 39/39.
 - `npm run build`: passing; Vite still reports the existing large chunk warning.
-- Browser visual QA: passing with no console warnings, no horizontal overflow, and no clipped button text at 1440x900 or 390x844.
+- Browser visual QA: full interaction sweep captured 38 screenshots in `output/playwright/full-visual-qa-2026-05-07T17-48-40-658Z/`. Restore completed, export downloads were created, and QA maps were cleaned up afterward.
+- Targeted topbar regression: passing with no overflow, no clipped controls, no oversized radii, and no console warnings at 1440px and 390px in `output/playwright/topbar-regression-2026-05-07T17-51-57-716Z/`.

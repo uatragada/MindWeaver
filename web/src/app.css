@@ -445,7 +445,7 @@ button {
   gap: 5px;
   padding: 3px 9px;
   border: 1px solid var(--mw-border);
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--mw-muted);
   font-size: 0.72rem;
@@ -614,6 +614,11 @@ button {
   margin-top: 14px;
   overflow-x: auto;
   padding-bottom: 4px;
+  scrollbar-width: none;
+}
+
+.map-tabs-row::-webkit-scrollbar {
+  display: none;
 }
 
 .map-home-tab,
@@ -718,7 +723,7 @@ button {
 
 .map-reopen-chip {
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--mw-text);
   padding: 7px 12px;
@@ -729,7 +734,7 @@ button {
   align-items: center;
   gap: 5px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.03);
   color: var(--mw-muted);
   font-size: 0.75rem;
@@ -1274,7 +1279,7 @@ button {
   align-items: center;
   gap: 6px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--mw-muted);
   padding: 5px 10px;
@@ -1335,7 +1340,7 @@ button {
 .graph-chip,
 .graph-selection-pill {
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--mw-text);
   padding: 7px 12px;
@@ -1365,7 +1370,7 @@ button {
 
 .graph-chip-select .select-trigger {
   min-height: 34px;
-  border-radius: 999px;
+  border-radius: 8px;
   padding-inline: 12px 34px;
 }
 
@@ -2303,7 +2308,7 @@ select.text-input option:hover {
 
 .chat-import-pill {
   padding: 6px 10px;
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.09);
   color: var(--mw-text);
   font-size: 0.84rem;
@@ -3034,8 +3039,20 @@ textarea:focus-visible,
   min-width: 0;
 }
 
+.top-command-bar .topbar-filter-section {
+  flex: 1 1 250px;
+}
+
+.top-command-bar .topbar-type-filter {
+  flex: 1 1 118px;
+  width: auto;
+  max-width: 160px;
+}
+
 .top-command-bar .topbar-type-filter .select-trigger,
 .top-command-bar .topbar-focus-depth .select-trigger {
+  width: 100%;
+  min-width: 0;
   height: 32px;
   border-color: var(--mw-border);
   border-radius: 8px;
@@ -3201,7 +3218,7 @@ textarea:focus-visible,
   right: 4px;
   min-width: 16px;
   height: 16px;
-  border-radius: 999px;
+  border-radius: 8px;
   background: rgba(247, 216, 122, 0.92);
   color: #07111d;
   display: grid;
@@ -3525,6 +3542,28 @@ textarea:focus-visible,
   .map-tabs-command,
   .graph-toolbar-modern {
     padding: 8px 12px;
+  }
+
+  .top-command-bar .topbar-search-section,
+  .top-command-bar .topbar-filter-section {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .top-command-bar .topbar-type-filter {
+    max-width: none;
+  }
+
+  .topbar-preset-control,
+  .topbar-focus-section {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .topbar-preset-control::-webkit-scrollbar,
+  .topbar-focus-section::-webkit-scrollbar {
+    display: none;
   }
 
   .map-tabs-command {
