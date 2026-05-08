@@ -27,6 +27,7 @@
 - Redesigned the no-session opening page into a calmer All Maps workspace instead of a marketing-style page, using the existing dark shell and graph palette without introducing new brand colors.
 - Preserved opening-page workflows for map tabs, reopen recent, provider switching, start map, demo map, recent maps, workspace flow, and local data/privacy status.
 - Fixed homepage visual QA findings: long capture target names now truncate instead of expanding the top strip, the mobile map strip stays compact and horizontally scrollable, the mobile recent list is bounded, and the active-map action stacks cleanly on narrow screens.
+- Tightened the opening page again toward a more minimal Obsidian-like file browser: reduced filled panel chrome, converted map stats to inline metadata, flattened recent maps into a compact row list, softened scrollbars, shortened the primary copy, and kept provider/workflow/local-data details in a quiet right rail.
 
 ## QA Ledger
 
@@ -38,3 +39,4 @@
 - Browser visual QA: full interaction sweep captured 38 screenshots in `output/playwright/full-visual-qa-2026-05-07T17-48-40-658Z/`. Restore completed, export downloads were created, and QA maps were cleaned up afterward.
 - Targeted topbar regression: passing with no overflow, no clipped controls, no oversized radii, and no console warnings at 1440px and 390px in `output/playwright/topbar-regression-2026-05-07T17-51-57-716Z/`.
 - Opening page visual QA: in-app browser smoke passed for All Maps, AI Provider, Start A Knowledge Map, and Try A Demo Map. Scripted Playwright QA passed with 7 screenshots in `output/playwright/homepage-qa-2026-05-07T23-40-04-437Z/`, covering desktop/tablet/mobile layouts, provider menu and switch/restore, start-map and demo-map flows with API cleanup, recent-map opening, no body overflow, no clipped visible controls, no oversized homepage radii, no unlabeled icon buttons, no console warnings/errors, and no hard-coded hex colors in the new opening-page CSS block.
+- Minimal opening page QA: in-app browser smoke passed for page identity, meaningful content, AI provider, start map, demo map, and console health. Scripted Playwright QA passed with 6 screenshots in `output/playwright/minimal-home-qa-2026-05-08T02-51-12-788Z/`, covering desktop/tablet/mobile layouts, provider menu and switch/restore, start-map and demo-map flows with API cleanup, recent-map opening, no body overflow, no clipped controls, no oversized homepage radii, no console warnings/errors, and no hard-coded hex colors in the opening-page CSS block.

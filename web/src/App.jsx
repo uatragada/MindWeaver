@@ -2993,8 +2993,8 @@ export default function App() {
               <div className="home-heading-row">
                 <div>
                   <p className="panel-title">MindWeaver</p>
-                  <h1>All Maps</h1>
-                  <p>Start a map, reopen recent work, or tune capture settings before you enter the graph workspace.</p>
+                  <h1>Maps</h1>
+                  <p>Open a graph workspace or start a new one.</p>
                 </div>
                 <div className="home-status-stack" aria-label="Map summary">
                   <div><span>Maps</span><strong>{homeStats.maps}</strong></div>
@@ -3029,8 +3029,7 @@ export default function App() {
             <section className="panel recent-panel home-recent-panel">
               <div className="home-section-header">
                 <div>
-                  <p className="panel-title">Recent Maps</p>
-                  <h2>Pick up where you left off</h2>
+                  <h2>Recent Maps</h2>
                 </div>
                 {sessionTargetState.activeSession ? (
                   <button className="small-button" type="button" onClick={() => openSessionTab(sessionTargetState.activeSession.id)}>
