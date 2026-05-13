@@ -1,3 +1,5 @@
+import { LoadingButton } from "../ui/Shell.jsx";
+
 export default function MapOverviewCard({
   mapName,
   nodeCount,
@@ -36,15 +38,15 @@ export default function MapOverviewCard({
         </div>
       </div>
       <div className="action-row">
-        <button className="primary-button" onClick={onRunGapAnalysis} disabled={isLoadingGaps || !canRunGapAnalysis}>
-          {isLoadingGaps ? "Finding gaps..." : "Run Gap Analysis"}
-        </button>
-        <button className="secondary-button" onClick={onGenerateQuiz} disabled={isLoadingQuiz}>
-          {isLoadingQuiz ? "Building quiz..." : "Generate Quiz"}
-        </button>
-        <button className="ghost-button" onClick={onEndSession} disabled={isEndingSession || isEnded}>
-          {isEnded ? "Session Ended" : isEndingSession ? "Ending..." : "End Session"}
-        </button>
+        <LoadingButton className="primary-button" onClick={onRunGapAnalysis} disabled={!canRunGapAnalysis} isLoading={isLoadingGaps} loadingLabel="Finding map gaps">
+          Run Gap Analysis
+        </LoadingButton>
+        <LoadingButton className="secondary-button" onClick={onGenerateQuiz} isLoading={isLoadingQuiz} loadingLabel="Building quiz">
+          Generate Quiz
+        </LoadingButton>
+        <LoadingButton className="ghost-button" onClick={onEndSession} disabled={isEnded} isLoading={isEndingSession} loadingLabel="Ending session">
+          {isEnded ? "Session Ended" : "End Session"}
+        </LoadingButton>
       </div>
       {statusMessage ? <div className="message-banner">{statusMessage}</div> : null}
       {errorMessage ? <div className="message-banner error-banner">{errorMessage}</div> : null}

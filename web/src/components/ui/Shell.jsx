@@ -1,8 +1,11 @@
 import {
   ChevronLeft,
   ChevronRight,
+  Loader2,
   X
 } from "lucide-react";
+import { useRef } from "react";
+import { useFocusTrap } from "../../hooks/useAccessibilityHelpers.js";
 
 export function AppShell({ children, className = "" }) {
   return (
@@ -72,7 +75,7 @@ export function WorkspaceDrawer({
   footer = null
 }) {
   return (
-    <section className={`workspace-drawer-panel ${className}`.trim()}>
+    <section className={`workspace-drawer-panel ${className}`.trim()} aria-label={title} tabIndex={-1}>
       <div className="workspace-drawer-header">
         <div>
           <p className="panel-title">{title}</p>
@@ -130,7 +133,7 @@ export function StatusBanner({ children, tone = "default", className = "" }) {
   if (!children) return null;
 
   return (
-    <div className={`status-banner is-${tone} ${className}`.trim()}>
+    <div className={`status-banner is-${tone} ${className}`.trim()} role={tone === "error" ? "alert" : "status"}>
       {children}
     </div>
   );
@@ -178,6 +181,8 @@ export function SegmentedControl({ options, value, onChange, ariaLabel, classNam
             key={option.value}
             type="button"
             className={value === option.value ? "is-active" : ""}
+            aria-pressed={value === option.value}
+            title={option.label}
             onClick={() => onChange(option.value)}
           >
             {Icon ? <Icon size={14} strokeWidth={2.1} aria-hidden="true" /> : null}
@@ -196,6 +201,91 @@ export function FieldGroup({ label, help, children, className = "" }) {
       {children}
       {help ? <small>{help}</small> : null}
     </label>
+  );
+}
+
+export function LoadingButton({
+  children,
+  isLoading = false,
+  disabled = false,
+  className = "",
+  type = "button",
+  loadingLabel,
+  ...buttonProps
+}) {
+  return (
+    <button
+      type={type}
+      className={`loading-button ${className}`.trim()}
+      disabled={disabled || isLoading}
+      aria-busy={isLoading || undefined}
+      aria-label={isLoading && loadingLabel ? loadingLabel : undefined}
+      {...buttonProps}
+    >
+      {isLoading ? <Loader2 className="loading-spinner" size={16} aria-hidden="true" /> : null}
+      <span className="loading-button-label">{children}</span>
+    </button>
+  );
+}
+
+export function LiveRegion({ message, politeness = "polite" }) {
+  return (
+    <div className="sr-only" aria-live={politeness} aria-atomic="true">
+      {message}
+    </div>
+  );
+}
+
+export function ConfirmDialog({
+  isOpen,
+  title,
+  description,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  tone = "default",
+  onConfirm,
+  onCancel
+}) {
+  const dialogRef = useRef(null);
+  const cancelButtonRef = useRef(null);
+  useFocusTrap(isOpen, {
+    containerRef: dialogRef,
+    initialFocusRef: cancelButtonRef,
+    onEscape: onCancel
+  });
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="confirm-dialog-overlay" role="presentation">
+      <section
+        ref={dialogRef}
+        className={`confirm-dialog is-${tone}`.trim()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+        aria-describedby={description ? "confirm-dialog-description" : undefined}
+        tabIndex={-1}
+      >
+        <div className="confirm-dialog-copy">
+          <p className="panel-title">Confirm</p>
+          <h2 id="confirm-dialog-title">{title}</h2>
+          {description ? <p id="confirm-dialog-description">{description}</p> : null}
+        </div>
+        <div className="confirm-dialog-actions">
+          <button ref={cancelButtonRef} className="ghost-button" type="button" onClick={onCancel}>
+            {cancelLabel}
+          </button>
+          <button
+            className={tone === "danger" ? "danger-button" : "primary-button"}
+            type="button"
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 

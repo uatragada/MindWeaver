@@ -49,11 +49,14 @@ import MapStructurePanel from "./components/panels/MapStructurePanel.jsx";
 import {
   ActionBar,
   AppShell,
+  ConfirmDialog,
   DrawerOpenButton,
   EmptyState,
   FieldGroup,
   GraphToolbar,
   IconButton,
+  LiveRegion,
+  LoadingButton,
   MapTabs,
   MetricStrip,
   PanelHeader,
@@ -63,6 +66,11 @@ import {
   WorkspaceDrawer,
   WorkspaceNav
 } from "./components/ui/Shell.jsx";
+import {
+  useFocusTrap,
+  useTextareaSubmitShortcut,
+  useUnsavedChangesWarning
+} from "./hooks/useAccessibilityHelpers.js";
 import { useLocalStorageState } from "./hooks/useLocalStorageState.js";
 import { useSessionRoute } from "./hooks/useSessionRoute.js";
 import { API_BASE, fetchJson } from "./lib/api.js";
@@ -141,7 +149,9 @@ export default function App() {
   const fgRef = useRef(null);
   const graphContainerRef = useRef(null);
   const nodeNoteTextareaRef = useRef(null);
+  const nodeNoteFullscreenRef = useRef(null);
   const rightRailRef = useRef(null);
+  const confirmResolverRef = useRef(null);
   const tabViewHydrationRef = useRef(null);
   const sessionCacheHydrationRef = useRef(null);
   const graphFitTimersRef = useRef([]);
@@ -178,6 +188,7 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [homeErrorMessage, setHomeErrorMessage] = useState("");
+  const [confirmDialog, setConfirmDialog] = useState(null);
   const [isSavingLlmSettings, setIsSavingLlmSettings] = useState(false);
   const [isLoadingGraph, setIsLoadingGraph] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
@@ -260,6 +271,30 @@ export default function App() {
   const [pinnedNodePositions, setPinnedNodePositions] = useState({});
   const deferredNodeSearch = useDeferredValue(nodeSearch);
   const chatHistoryImportPreview = useMemo(() => getChatHistoryImportPreview(chatImportJson), [chatImportJson]);
+
+  const requestConfirmation = useCallback((options) => new Promise((resolve) => {
+    if (confirmResolverRef.current) {
+      confirmResolverRef.current(false);
+    }
+    confirmResolverRef.current = resolve;
+    setConfirmDialog({
+      cancelLabel: "Cancel",
+      confirmLabel: "Confirm",
+      tone: "default",
+      ...options
+    });
+  }), []);
+
+  const closeConfirmDialog = useCallback((confirmed) => {
+    confirmResolverRef.current?.(confirmed);
+    confirmResolverRef.current = null;
+    setConfirmDialog(null);
+  }, []);
+
+  useEffect(() => () => {
+    confirmResolverRef.current?.(false);
+    confirmResolverRef.current = null;
+  }, []);
 
   const dropSessionLocally = useCallback((removedSessionId) => {
     if (!removedSessionId) return;
@@ -847,7 +882,12 @@ export default function App() {
   const handleDeleteSession = async () => {
     if (!sessionId) return;
     const deletingSessionId = sessionId;
-    const confirmed = window.confirm("Delete this local session, its sources, and session-specific graph data? This cannot be undone.");
+    const confirmed = await requestConfirmation({
+      title: "Delete This Map?",
+      description: "This removes the local session, sources, and session-specific graph data. It cannot be undone.",
+      confirmLabel: "Delete Map",
+      tone: "danger"
+    });
     if (!confirmed) return;
 
     setIsDeletingSession(true);
@@ -908,7 +948,12 @@ export default function App() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    const confirmed = window.confirm("Restore this MindWeaver backup? This replaces local sessions, sources, and graph data.");
+    const confirmed = await requestConfirmation({
+      title: "Restore Backup?",
+      description: "This replaces local sessions, sources, and graph data with the selected backup file.",
+      confirmLabel: "Restore Backup",
+      tone: "danger"
+    });
     if (!confirmed) return;
 
     setIsRestoringBackup(true);
@@ -1536,6 +1581,11 @@ export default function App() {
       ? "Open Notes"
       : "Add Note";
 
+  useUnsavedChangesWarning(
+    Boolean(isNodeNoteEditorOpen && hasNodeNoteChanges),
+    "You have unsaved MindWeaver node notes."
+  );
+
   const mergeCandidateNodes = useMemo(() => {
     if (!selectedNode) return [];
     const selectedEntityId = selectedNode.entityId ?? null;
@@ -1984,7 +2034,12 @@ export default function App() {
         setStatusMessage("No low-confidence, no-evidence concepts are ready to prune.");
         return;
       }
-      const confirmed = window.confirm(`Prune ${preview.count} low-confidence concept${preview.count === 1 ? "" : "s"} with no direct evidence?`);
+      const confirmed = await requestConfirmation({
+        title: "Prune Weak Nodes?",
+        description: `Remove ${preview.count} low-confidence concept${preview.count === 1 ? "" : "s"} with no direct evidence from this map.`,
+        confirmLabel: "Prune Nodes",
+        tone: "danger"
+      });
       if (!confirmed) return;
       await fetchJson(`${API_BASE}/api/prune`, {
         method: "POST",
@@ -2073,18 +2128,11 @@ export default function App() {
     setIsNodeNoteFullscreen(false);
   }, []);
 
-  useEffect(() => {
-    if (!isNodeNoteFullscreen) return;
-
-    const handleKeyDown = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      closeNodeNoteEditor();
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeNodeNoteEditor, isNodeNoteFullscreen]);
+  useFocusTrap(Boolean(isNodeNoteFullscreen && selectedNode), {
+    containerRef: nodeNoteFullscreenRef,
+    initialFocusRef: nodeNoteTextareaRef,
+    onEscape: closeNodeNoteEditor
+  });
 
   const openNodeNoteEditor = useCallback(({ fullscreen = false } = {}) => {
     if (!selectedNode) return;
@@ -2134,6 +2182,10 @@ export default function App() {
     }
   };
 
+  const handleNodeNoteSubmitShortcut = useTextareaSubmitShortcut(() => {
+    void handleSaveNodeNote();
+  }, { disabled: isSavingNodeNote || !hasNodeNoteChanges });
+
   const renderNodeNoteEditor = (presentation = "inline") => {
     const isFullscreenPresentation = presentation === "fullscreen";
 
@@ -2169,9 +2221,11 @@ export default function App() {
           <textarea
             ref={nodeNoteTextareaRef}
             className={`text-area node-note-editor-area ${isFullscreenPresentation ? "is-fullscreen" : ""}`.trim()}
+            name="nodeNote"
             value={nodeNoteDraft}
             onChange={(event) => setNodeNoteDraft(event.target.value)}
-            placeholder="Write a markdown note attached to this node in the current map..."
+            onKeyDown={handleNodeNoteSubmitShortcut}
+            placeholder="Write a markdown note attached to this node in the current map…"
           />
         ) : (
           <MarkdownNotePreview
@@ -2181,14 +2235,16 @@ export default function App() {
           />
         )}
         <div className="queue-actions">
-          <button
+          <LoadingButton
             className="secondary-button"
             type="button"
-            disabled={isSavingNodeNote || !hasNodeNoteChanges}
+            disabled={!hasNodeNoteChanges}
+            isLoading={isSavingNodeNote}
+            loadingLabel="Saving note"
             onClick={handleSaveNodeNote}
           >
-            {isSavingNodeNote ? "Saving..." : "Save Note"}
-          </button>
+            Save Note
+          </LoadingButton>
           <button
             className="ghost-button"
             type="button"
@@ -2210,7 +2266,12 @@ export default function App() {
 
   const handleMergeNode = async () => {
     if (!sessionId || !selectedNode || !mergeTargetId) return;
-    const confirmed = window.confirm(`Merge "${selectedNode.label}" into the selected target? The source node will be hidden from this session.`);
+    const confirmed = await requestConfirmation({
+      title: "Merge This Node?",
+      description: `Merge "${selectedNode.label}" into the selected target. The source node will be hidden from this session.`,
+      confirmLabel: "Merge Node",
+      tone: "danger"
+    });
     if (!confirmed) return;
 
     setIsMergingNode(true);
@@ -2235,7 +2296,12 @@ export default function App() {
 
   const handleDeleteArtifact = async (artifactId) => {
     if (!sessionId) return;
-    const confirmed = window.confirm("Remove this source from the map? Related concept evidence will be detached.");
+    const confirmed = await requestConfirmation({
+      title: "Remove This Source?",
+      description: "Related concept evidence will be detached from this map.",
+      confirmLabel: "Remove Source",
+      tone: "danger"
+    });
     if (!confirmed) return;
 
     setIsDeletingArtifact(true);
@@ -2290,7 +2356,11 @@ export default function App() {
     const activeRefineLabel = llmSettings.provider === "local"
       ? `${activeLocalModelLabel} via Ollama`
       : "OpenAI";
-    const confirmed = window.confirm(`Refine this map with ${activeRefineLabel}? MindWeaver will rename, merge, and reconnect nodes conservatively to improve clarity.`);
+    const confirmed = await requestConfirmation({
+      title: "Refine This Map?",
+      description: `MindWeaver will use ${activeRefineLabel} to rename, merge, and reconnect nodes conservatively to improve clarity.`,
+      confirmLabel: "Refine Map"
+    });
     if (!confirmed) return;
 
     setIsRefiningMap(true);
@@ -2759,6 +2829,26 @@ export default function App() {
     ctx.restore();
   }, [focusIsActive, focusTraversal, hideUnrelated, highlightedEdgeKeys, pathEdgeKeys, selectedNodeIdSet]);
 
+  const handleStartGoalSubmitShortcut = useTextareaSubmitShortcut((event) => {
+    void handleCreateSession(event);
+  }, { disabled: isCreatingSession });
+  const handleChatSubmitShortcut = useTextareaSubmitShortcut(() => {
+    void handleChat();
+  }, { disabled: isChatting || !chatQuestion.trim() });
+  const handleImportSubmitShortcut = useTextareaSubmitShortcut((event) => {
+    void handleImportSubmit(event);
+  }, { disabled: isImporting || importIsTooLong });
+  const handleChatImportSubmitShortcut = useTextareaSubmitShortcut(() => {
+    void handleChatHistoryImportSubmit();
+  }, {
+    disabled: isImportingChatHistory
+      || !chatImportJson.trim()
+      || (chatHistoryImportPreview.state === "ready" && Boolean(chatHistoryImportPreview.issues?.length))
+  });
+  const handleBulkImportSubmitShortcut = useTextareaSubmitShortcut(() => {
+    void handleBulkImport();
+  }, { disabled: isBulkImporting || !bulkImportText.trim() });
+
   const graphPresetOptions = GRAPH_VIEW_PRESET_OPTIONS.map((option) => ({
     ...option,
     icon: option.value === "overview"
@@ -2804,13 +2894,15 @@ export default function App() {
           <form className="map-tab-create-form" onSubmit={(event) => handleCreateSession(event, { fromTabs: true })}>
             <input
               className="text-input map-tab-input"
+              name="tabMapName"
+              autoComplete="off"
               placeholder="Map name"
               value={tabComposerGoal}
               onChange={(event) => setTabComposerGoal(event.target.value)}
             />
-            <button className="secondary-button" type="submit" disabled={isCreatingSession}>
-              {isCreatingSession ? "Creating..." : "New Map"}
-            </button>
+            <LoadingButton className="secondary-button" type="submit" isLoading={isCreatingSession} loadingLabel="Creating new map">
+              New Map
+            </LoadingButton>
           </form>
         )}
 
@@ -2872,7 +2964,9 @@ export default function App() {
         <form className="topbar-new-map" onSubmit={(event) => handleCreateSession(event, { fromTabs: true })}>
           <input
             className="topbar-new-input"
-            placeholder="New map..."
+            name="topbarMapName"
+            autoComplete="off"
+            placeholder="New map…"
             value={tabComposerGoal}
             onChange={(event) => setTabComposerGoal(event.target.value)}
           />
@@ -2887,13 +2981,15 @@ export default function App() {
           <Search size={15} strokeWidth={2.1} aria-hidden="true" />
           <input
             className="topbar-search-input"
-            placeholder="Search nodes, sources, links..."
+            name="graphSearch"
+            autoComplete="off"
+            placeholder="Search nodes, sources, links…"
             value={nodeSearch}
             onChange={(event) => setNodeSearch(event.target.value)}
           />
-          <button className="topbar-btn" type="button" onClick={handleGraphSearch} disabled={isSearchingGraph || !nodeSearch.trim()}>
-            {isSearchingGraph ? "Finding..." : "Find"}
-          </button>
+          <LoadingButton className="topbar-btn" type="button" onClick={handleGraphSearch} disabled={!nodeSearch.trim()} isLoading={isSearchingGraph} loadingLabel="Finding graph matches">
+            Find
+          </LoadingButton>
           <IconButton className="topbar-fit-btn" label="Fit graph to viewport" onClick={handleFocusGraph}>
             <Maximize2 size={14} strokeWidth={2.3} />
           </IconButton>
@@ -2982,12 +3078,29 @@ export default function App() {
     concepts: recentSessions.reduce((total, session) => total + (session.conceptCount ?? 0), 0),
     sources: recentSessions.reduce((total, session) => total + (session.sourceCount ?? 0), 0)
   };
+  const liveRegionMessage = [homeErrorMessage, errorMessage, statusMessage].filter(Boolean).join(" ");
+  const accessibilityLayer = (
+    <>
+      <LiveRegion message={liveRegionMessage} />
+      <ConfirmDialog
+        isOpen={Boolean(confirmDialog)}
+        title={confirmDialog?.title}
+        description={confirmDialog?.description}
+        confirmLabel={confirmDialog?.confirmLabel}
+        cancelLabel={confirmDialog?.cancelLabel}
+        tone={confirmDialog?.tone}
+        onCancel={() => closeConfirmDialog(false)}
+        onConfirm={() => closeConfirmDialog(true)}
+      />
+    </>
+  );
 
   if (!sessionId) {
     return (
       <div className="page-shell">
+        <a className="skip-link" href="#main-content">Skip to content</a>
         {mapTabsChrome}
-        <div className="landing-shell home-workspace">
+        <main className="landing-shell home-workspace" id="main-content" tabIndex={-1}>
           <div className="home-main-column">
             <section className="landing-hero home-command-panel panel">
               <div className="home-heading-row">
@@ -3009,18 +3122,21 @@ export default function App() {
                   <span>New map</span>
                   <textarea
                     className="text-area compact-area"
+                    name="startGoal"
+                    autoComplete="off"
                     placeholder="Example: Event-driven systems knowledge map"
                     value={startGoal}
                     onChange={(event) => setStartGoal(event.target.value)}
+                    onKeyDown={handleStartGoalSubmitShortcut}
                   />
                 </label>
                 <div className="home-start-actions">
-                  <button className="primary-button jumbo-button" type="submit" disabled={isCreatingSession}>
-                    <Plus size={16} aria-hidden="true" /> {isCreatingSession ? "Starting..." : "Start A Knowledge Map"}
-                  </button>
-                  <button className="secondary-button jumbo-button" type="button" onClick={handleCreateDemoSession} disabled={isCreatingDemo}>
-                    <Network size={16} aria-hidden="true" /> {isCreatingDemo ? "Building demo..." : "Try A Demo Map"}
-                  </button>
+                  <LoadingButton className="primary-button jumbo-button" type="submit" isLoading={isCreatingSession} loadingLabel="Starting knowledge map">
+                    <Plus size={16} aria-hidden="true" /> Start A Knowledge Map
+                  </LoadingButton>
+                  <LoadingButton className="secondary-button jumbo-button" type="button" onClick={handleCreateDemoSession} isLoading={isCreatingDemo} loadingLabel="Building demo map">
+                    <Network size={16} aria-hidden="true" /> Try A Demo Map
+                  </LoadingButton>
                 </div>
               </form>
               {homeErrorMessage ? <div className="message-banner error-banner">{homeErrorMessage}</div> : null}
@@ -3091,7 +3207,7 @@ export default function App() {
                 ) : null}
               </div>
               <div className={`toolbar-note llm-status-note ${canUseSelectedLlm ? "" : "is-warning"}`.trim()}>
-                {isSavingLlmSettings ? "Saving AI provider preference..." : llmStatusMessage}
+                {isSavingLlmSettings ? "Saving AI provider preference…" : llmStatusMessage}
               </div>
             </section>
 
@@ -3113,7 +3229,8 @@ export default function App() {
               </div>
             </section>
           </div>
-        </div>
+        </main>
+        {accessibilityLayer}
       </div>
     );
   }
@@ -3169,6 +3286,7 @@ export default function App() {
 
   return (
     <AppShell className="page-shell is-workspace">
+      <a className="skip-link" href="#main-content">Skip to content</a>
       {unifiedTopbar}
       <div className={appShellClassName}>
         <aside className={`left-rail ${leftRailMinimized ? "is-minimized" : ""}`} aria-label="Map navigation">
@@ -3184,9 +3302,17 @@ export default function App() {
           />
         </aside>
 
-        <main className="graph-card">
+        <main className="graph-card" id="main-content" tabIndex={-1}>
           {(!leftRailMinimized || !rightRailMinimized) && (
-            <div className="drawer-backdrop" onClick={() => { setLeftRailMinimized(true); setRightRailMinimized(true); }} />
+            <button
+              className="drawer-backdrop"
+              type="button"
+              aria-label="Close workspace panels"
+              onClick={() => {
+                setLeftRailMinimized(true);
+                setRightRailMinimized(true);
+              }}
+            />
           )}
           {leftRailMinimized && (
             <DrawerOpenButton side="left" label="Open workspaces panel" onClick={() => setLeftRailMinimized(false)} />
@@ -3233,7 +3359,7 @@ export default function App() {
                     ))}
                   </div>
                   <button className="small-button" type="button" disabled={!canRunBridge || isIntersecting} onClick={() => { openRightPanel("inspector"); void handleIntersect(); }}>
-                    {isIntersecting ? "Explaining..." : "Explain Bridge"}
+                    {isIntersecting ? "Explaining…" : "Explain Bridge"}
                   </button>
                   <button className="small-button" type="button" onClick={clearGraphSelection}>
                     Clear
@@ -3277,15 +3403,16 @@ export default function App() {
             </div>
           ) : null}
           <div className="graph-canvas" ref={graphContainerRef}>
-            <button
+            <LoadingButton
               className="graph-refresh-button"
               type="button"
               onClick={handleRefreshGraph}
-              disabled={isLoadingGraph}
+              isLoading={isLoadingGraph}
+              loadingLabel="Refreshing map"
               title="Reload this map and the shared map state"
             >
-              {isLoadingGraph ? "Refreshing..." : "Refresh map"}
-            </button>
+              <RefreshCw size={14} aria-hidden="true" /> Refresh map
+            </LoadingButton>
             {graphData.nodes.length ? (
               <div className="graph-legend" aria-label="Graph node type legend">
                 {NODE_TYPE_LEGEND.map((item) => (
@@ -3455,25 +3582,25 @@ export default function App() {
                     Local storage is used for the graph. AI tasks follow the shared provider setting: {activeLlmProviderLabel}{llmSettings.provider === "local" ? ` (${activeLocalModelLabel})` : ""}. Source classification reads up to {contentLimitChars.toLocaleString()} characters per source.
                   </div>
                   <ActionBar>
-                    <button className="small-button" onClick={() => navigateToSession(null)}>
+                    <button className="small-button" type="button" onClick={() => navigateToSession(null)}>
                       <Home size={14} aria-hidden="true" /> All Maps
                     </button>
-                    <button className="small-button" disabled={isExporting} onClick={() => handleExport("markdown")}>
-                      <FileDown size={14} aria-hidden="true" /> {isExporting ? "Exporting..." : "Export Markdown"}
-                    </button>
-                    <button className="small-button" disabled={isExporting} onClick={() => handleExport("json")}>
+                    <LoadingButton className="small-button" type="button" isLoading={isExporting} loadingLabel="Exporting Markdown" onClick={() => handleExport("markdown")}>
+                      <FileDown size={14} aria-hidden="true" /> Export Markdown
+                    </LoadingButton>
+                    <LoadingButton className="small-button" type="button" isLoading={isExporting} loadingLabel="Exporting JSON" onClick={() => handleExport("json")}>
                       <FileJson size={14} aria-hidden="true" /> Export JSON
-                    </button>
+                    </LoadingButton>
                     <button className="small-button" type="button" onClick={handleDownloadBackup}>
                       <Download size={14} aria-hidden="true" /> Backup Data
                     </button>
                     <label className={`small-button file-button ${isRestoringBackup ? "is-disabled" : ""}`}>
-                      <ArchiveRestore size={14} aria-hidden="true" /> {isRestoringBackup ? "Restoring..." : "Restore Backup"}
-                      <input type="file" accept=".json,application/json" disabled={isRestoringBackup} onChange={handleRestoreBackup} />
+                      <ArchiveRestore size={14} aria-hidden="true" /> {isRestoringBackup ? "Restoring…" : "Restore Backup"}
+                      <input name="restoreBackupFile" type="file" accept=".json,application/json" disabled={isRestoringBackup} onChange={handleRestoreBackup} />
                     </label>
-                    <button className="small-button is-reject" disabled={isDeletingSession} onClick={handleDeleteSession}>
-                      <Trash2 size={14} aria-hidden="true" /> {isDeletingSession ? "Deleting..." : "Delete This Map"}
-                    </button>
+                    <LoadingButton className="small-button is-reject" type="button" isLoading={isDeletingSession} loadingLabel="Deleting map" onClick={handleDeleteSession}>
+                      <Trash2 size={14} aria-hidden="true" /> Delete This Map
+                    </LoadingButton>
                   </ActionBar>
                 </section>
                 <section className="summary-card map-control-card">
@@ -3545,12 +3672,12 @@ export default function App() {
                   <div><strong>{progressState?.longTerm?.sessionCount ?? 0}</strong><span>Sessions</span></div>
                 </div>
                 <div className="queue-actions">
-                  <button className="small-button" onClick={handleLoadSummary} disabled={isLoadingSummary}>
-                    {isLoadingSummary ? "Summarizing..." : "Generate Summary"}
-                  </button>
-                  <button className="small-button is-reject" onClick={handlePrune} disabled={isPruning}>
-                    {isPruning ? "Checking..." : "Prune Weak Nodes"}
-                  </button>
+                  <LoadingButton className="small-button" type="button" onClick={handleLoadSummary} isLoading={isLoadingSummary} loadingLabel="Summarizing progress">
+                    Generate Summary
+                  </LoadingButton>
+                  <LoadingButton className="small-button is-reject" type="button" onClick={handlePrune} isLoading={isPruning} loadingLabel="Checking weak nodes">
+                    Prune Weak Nodes
+                  </LoadingButton>
                 </div>
                 {learningSummary ? (
                   <div className="summary-card">
@@ -3572,13 +3699,16 @@ export default function App() {
                 <div className="import-form workspace-form">
                   <textarea
                     className="text-area workspace-area"
+                    name="assistantQuestion"
+                    autoComplete="off"
                     placeholder="Example: What should I study next and why?"
                     value={chatQuestion}
                     onChange={(event) => setChatQuestion(event.target.value)}
+                    onKeyDown={handleChatSubmitShortcut}
                   />
-                  <button className="primary-button" onClick={handleChat} disabled={isChatting || !chatQuestion.trim()}>
-                    {isChatting ? "Thinking..." : "Ask The Graph"}
-                  </button>
+                  <LoadingButton className="primary-button" onClick={handleChat} disabled={!chatQuestion.trim()} isLoading={isChatting} loadingLabel="Thinking about graph question">
+                    Ask The Graph
+                  </LoadingButton>
                 </div>
                 {chatAnswer ? (
                   <div className="summary-card">
@@ -3673,22 +3803,27 @@ export default function App() {
                     />
                     <textarea
                       className="text-area chat-import-prompt-area"
+                      name="chatImportPrompt"
                       readOnly
                       value={chatImportPrompt}
-                      placeholder={isLoadingChatImportPrompt ? `Preparing a ${chatImportProviderLabel} prompt for this map...` : "Prompt will appear here."}
+                      placeholder={isLoadingChatImportPrompt ? `Preparing a ${chatImportProviderLabel} prompt for this map…` : "Prompt will appear here."}
                     />
                     <div className="chat-import-actions">
-                      <button className="secondary-button" type="button" onClick={handleCopyChatImportPrompt} disabled={isLoadingChatImportPrompt || !sessionId}>
-                        {isLoadingChatImportPrompt ? "Preparing Prompt..." : `Copy ${chatImportProviderLabel} Prompt`}
-                      </button>
+                      <LoadingButton className="secondary-button" type="button" onClick={handleCopyChatImportPrompt} disabled={!sessionId} isLoading={isLoadingChatImportPrompt} loadingLabel={`Preparing ${chatImportProviderLabel} prompt`}>
+                        Copy {chatImportProviderLabel} Prompt
+                      </LoadingButton>
                       <div className="queue-meta">
                         The prompt is tuned to the current map and requests strict JSON only.
                       </div>
                     </div>
                     <textarea
                       className="text-area workspace-area chat-import-json-area"
-                      placeholder="Paste the JSON response from ChatGPT or Claude here..."
+                      name="chatImportJson"
+                      autoComplete="off"
+                      spellCheck="false"
+                      placeholder="Paste the JSON response from ChatGPT or Claude here…"
                       value={chatImportJson}
+                      onKeyDown={handleChatImportSubmitShortcut}
                       onChange={(event) => {
                         setChatImportJson(event.target.value);
                         setChatImportErrorMessage("");
@@ -3724,14 +3859,16 @@ export default function App() {
                       <div className="message-banner">{chatHistoryImportPreview.warnings.join(" ")}</div>
                     ) : null}
                     {chatImportErrorMessage ? <div className="message-banner error-banner">{chatImportErrorMessage}</div> : null}
-                    <button
+                    <LoadingButton
                       className="primary-button"
                       type="button"
                       disabled={isImportingChatHistory || !chatImportJson.trim() || (chatHistoryImportPreview.state === "ready" && chatHistoryImportPreview.issues?.length)}
+                      isLoading={isImportingChatHistory}
+                      loadingLabel="Importing chat history"
                       onClick={handleChatHistoryImportSubmit}
                     >
-                      {isImportingChatHistory ? "Importing Chat History..." : "Import Chat History JSON"}
-                    </button>
+                      Import Chat History JSON
+                    </LoadingButton>
                   </div>
                 </div>
                 ) : null}
@@ -3746,22 +3883,25 @@ export default function App() {
                       options={SOURCE_TYPE_OPTIONS}
                       ariaLabel="Source type"
                     />
-                    <input className="text-input" placeholder="Title" value={importForm.title} onChange={(event) => handleImportChange("title", event.target.value)} />
-                    <input className="text-input" placeholder="Optional source URL" value={importForm.url} onChange={(event) => handleImportChange("url", event.target.value)} />
+                    <input className="text-input" name="sourceTitle" autoComplete="off" placeholder="Title" value={importForm.title} onChange={(event) => handleImportChange("title", event.target.value)} />
+                    <input className="text-input" name="sourceUrl" type="url" inputMode="url" autoComplete="url" placeholder="Optional source URL" value={importForm.url} onChange={(event) => handleImportChange("url", event.target.value)} />
                     <textarea
                       className="text-area workspace-area import-content-area"
-                      placeholder="Paste the note, transcript, or extracted PDF text here..."
+                      name="sourceContent"
+                      autoComplete="off"
+                      placeholder="Paste the note, transcript, or extracted PDF text here…"
                       value={importForm.content}
                       onChange={(event) => handleImportChange("content", event.target.value)}
+                      onKeyDown={handleImportSubmitShortcut}
                     />
-                    <input className="text-input" type="file" accept=".txt,.md,.text" onChange={handleImportFile} />
+                    <input className="text-input" name="sourceFile" type="file" accept=".txt,.md,.text" onChange={handleImportFile} />
                     <div className={`char-meter ${importIsTooLong ? "is-danger" : ""}`}>
                       {importContentLength.toLocaleString()} / {maxImportChars.toLocaleString()} characters. The selected AI provider reads up to {contentLimitChars.toLocaleString()} characters for classification.
                     </div>
                     {importIsTooLong ? <div className="message-banner error-banner">This import is too large. Trim it or split it into multiple sources before importing.</div> : null}
-                    <button className="primary-button" type="submit" disabled={isImporting || importIsTooLong}>
-                      {isImporting ? "Importing..." : "Import Into Map"}
-                    </button>
+                    <LoadingButton className="primary-button" type="submit" disabled={importIsTooLong} isLoading={isImporting} loadingLabel="Importing source">
+                      Import Into Map
+                    </LoadingButton>
                   </form>
                 </div>
                 ) : null}
@@ -3772,13 +3912,16 @@ export default function App() {
                   <div className="import-form">
                     <textarea
                       className="text-area workspace-area"
-                      placeholder={"Note one...\n---\nNote two..."}
+                      name="bulkImportText"
+                      autoComplete="off"
+                      placeholder={"Note one…\n---\nNote two…"}
                       value={bulkImportText}
                       onChange={(event) => setBulkImportText(event.target.value)}
+                      onKeyDown={handleBulkImportSubmitShortcut}
                     />
-                    <button className="secondary-button" type="button" disabled={isBulkImporting || !bulkImportText.trim()} onClick={handleBulkImport}>
-                      {isBulkImporting ? "Bulk importing..." : "Bulk Import"}
-                    </button>
+                    <LoadingButton className="secondary-button" type="button" disabled={!bulkImportText.trim()} isLoading={isBulkImporting} loadingLabel="Bulk importing sources" onClick={handleBulkImport}>
+                      Bulk Import
+                    </LoadingButton>
                   </div>
                 </div>
                 ) : null}
@@ -3805,9 +3948,9 @@ export default function App() {
                   <h2>Missing concepts</h2>
                   <p className="panel-subtitle">Use the current map structure and primary goal node to choose the next learning move.</p>
                 </div>
-                <button className="primary-button workspace-primary-action" onClick={handleRunGapAnalysis} disabled={isLoadingGaps || !primaryGoalNode?.id}>
-                  {isLoadingGaps ? "Finding gaps..." : "Run Gap Analysis"}
-                </button>
+                <LoadingButton className="primary-button workspace-primary-action" type="button" onClick={handleRunGapAnalysis} disabled={!primaryGoalNode?.id} isLoading={isLoadingGaps} loadingLabel="Finding gaps">
+                  Run Gap Analysis
+                </LoadingButton>
                 {gapSummary ? (
                   <div className="summary-card">
                     <h3>{gapSummary.gaps?.length ? `${gapSummary.gaps.length} gap${gapSummary.gaps.length === 1 ? "" : "s"} found` : "No explicit gaps yet"}</h3>
@@ -3839,9 +3982,9 @@ export default function App() {
                   <h2>Spaced review</h2>
                   <p className="panel-subtitle">Generate a short quiz and feed results back into confidence.</p>
                 </div>
-                <button className="primary-button workspace-primary-action" onClick={handleGenerateQuiz} disabled={isLoadingQuiz}>
-                  {isLoadingQuiz ? "Building quiz..." : "Generate Quiz"}
-                </button>
+                <LoadingButton className="primary-button workspace-primary-action" type="button" onClick={handleGenerateQuiz} isLoading={isLoadingQuiz} loadingLabel="Building quiz">
+                  Generate Quiz
+                </LoadingButton>
                 {quizState.message ? <div className="summary-card"><h3>Quiz status</h3><div className="queue-meta">{quizState.message}</div></div> : null}
                 {quizState.quiz?.length ? (
                   <>
@@ -4036,18 +4179,24 @@ export default function App() {
                   <div className="import-form">
                     <input
                       className="text-input"
+                      name="nodeLabel"
+                      autoComplete="off"
                       value={nodeEditForm.label}
                       onChange={(event) => setNodeEditForm((current) => ({ ...current, label: event.target.value }))}
                       placeholder="Node label"
                     />
                     <textarea
                       className="text-area compact-area"
+                      name="nodeDescription"
+                      autoComplete="off"
                       value={nodeEditForm.description}
                       onChange={(event) => setNodeEditForm((current) => ({ ...current, description: event.target.value }))}
                       placeholder="Short description or correction"
                     />
                     <textarea
                       className="text-area compact-area"
+                      name="nodeSummary"
+                      autoComplete="off"
                       value={nodeEditForm.summary}
                       onChange={(event) => setNodeEditForm((current) => ({ ...current, summary: event.target.value }))}
                       placeholder="What this concept means in your own words"
@@ -4090,9 +4239,9 @@ export default function App() {
                       options={MASTERY_OPTIONS}
                       ariaLabel="Mastery state"
                     />
-                    <button className="secondary-button" type="button" disabled={isSavingNode || !nodeEditForm.label.trim()} onClick={handleSaveNodeEdits}>
-                      {isSavingNode ? "Saving..." : "Save Node Edits"}
-                    </button>
+                    <LoadingButton className="secondary-button" type="button" disabled={!nodeEditForm.label.trim()} isLoading={isSavingNode} loadingLabel="Saving node edits" onClick={handleSaveNodeEdits}>
+                      Save Node Edits
+                    </LoadingButton>
                   </div>
                   <div className="merge-box">
                     <div>
@@ -4104,14 +4253,14 @@ export default function App() {
                         value={mergeTargetId}
                         onChange={setMergeTargetId}
                         options={[
-                          { value: "", label: "Merge into..." },
+                          { value: "", label: "Merge into…" },
                           ...mergeCandidateNodes.map((node) => ({ value: node.id, label: node.label }))
                         ]}
                         ariaLabel="Merge target"
                       />
-                      <button className="danger-button" type="button" disabled={isMergingNode || !mergeTargetId} onClick={handleMergeNode}>
-                        {isMergingNode ? "Merging..." : "Merge Into Target"}
-                      </button>
+                      <LoadingButton className="danger-button" type="button" disabled={!mergeTargetId} isLoading={isMergingNode} loadingLabel="Merging node" onClick={handleMergeNode}>
+                        Merge Into Target
+                      </LoadingButton>
                     </div>
                   </div>
                 </div>
@@ -4121,9 +4270,9 @@ export default function App() {
                   </button>
                   <button className="primary-button" disabled={isReviewing} onClick={() => handleReview(selectedNode.id, "approve")}>Approve Node</button>
                   <button className="danger-button" disabled={isReviewing} onClick={() => handleReview(selectedNode.id, "reject")}>Reject Node</button>
-                  <button className="ghost-button" disabled={isLearningMore} onClick={handleLearnMore}>
-                    {isLearningMore ? "Generating..." : "Explain This"}
-                  </button>
+                  <LoadingButton className="ghost-button" type="button" isLoading={isLearningMore} loadingLabel="Generating explanation" onClick={handleLearnMore}>
+                    Explain This
+                  </LoadingButton>
                 </div>
                 {learnMoreCopy ? <div className="learn-more-copy inspector-overview-card">{learnMoreCopy}</div> : null}
                 <div className="summary-card inspector-relationships-card">
@@ -4149,7 +4298,7 @@ export default function App() {
                       value={relationshipForm.targetId}
                       onChange={(value) => setRelationshipForm((current) => ({ ...current, targetId: value }))}
                       options={[
-                        { value: "", label: "Connect to..." },
+                        { value: "", label: "Connect to…" },
                         ...(graphState?.nodes ?? [])
                           .filter((node) => node.id !== selectedNode.id && visibleNodeTypes.includes(node.type))
                           .map((node) => ({ value: node.id, label: node.label }))
@@ -4162,10 +4311,10 @@ export default function App() {
                       options={RELATIONSHIP_TYPE_OPTIONS}
                       ariaLabel="Relationship type"
                     />
-                    <input className="text-input" placeholder="Optional relationship label" value={relationshipForm.label} onChange={(event) => setRelationshipForm((current) => ({ ...current, label: event.target.value }))} />
-                    <button className="secondary-button" disabled={isSavingRelationship || !relationshipForm.targetId} onClick={handleSaveRelationship}>
-                      {isSavingRelationship ? "Saving..." : "Add Relationship"}
-                    </button>
+                    <input className="text-input" name="relationshipLabel" autoComplete="off" placeholder="Optional relationship label" value={relationshipForm.label} onChange={(event) => setRelationshipForm((current) => ({ ...current, label: event.target.value }))} />
+                    <LoadingButton className="secondary-button" type="button" disabled={!relationshipForm.targetId} isLoading={isSavingRelationship} loadingLabel="Saving relationship" onClick={handleSaveRelationship}>
+                      Add Relationship
+                    </LoadingButton>
                   </div>
                 </div>
                 <div className="summary-card inspector-relationships-card">
@@ -4197,7 +4346,7 @@ export default function App() {
                         value={intersectionTargetId}
                         onChange={setIntersectionTargetId}
                         options={[
-                          { value: "", label: "Compare with..." },
+                          { value: "", label: "Compare with…" },
                           ...(graphState?.nodes ?? [])
                             .filter((node) => node.id !== selectedNode.id && visibleNodeTypes.includes(node.type))
                             .map((node) => ({ value: node.id, label: node.label }))
@@ -4207,9 +4356,9 @@ export default function App() {
                     </div>
                   )}
                   <div className="queue-actions">
-                    <button className="secondary-button" disabled={isIntersecting || !canRunBridge} onClick={handleIntersect}>
-                      {isIntersecting ? "Finding bridge..." : "Find Bridge"}
-                    </button>
+                    <LoadingButton className="secondary-button" type="button" disabled={!canRunBridge} isLoading={isIntersecting} loadingLabel="Finding bridge" onClick={handleIntersect}>
+                      Find Bridge
+                    </LoadingButton>
                     {selectedGroupNodes.length > 1 ? (
                       <button className="ghost-button" type="button" onClick={clearGraphSelection}>
                         Clear Selection
@@ -4265,7 +4414,7 @@ export default function App() {
         </aside>
         {isNodeNoteFullscreen && selectedNode ? (
           <div className="node-note-fullscreen-overlay" role="dialog" aria-modal="true" aria-label={`Fullscreen note editor for ${selectedNode.label}`}>
-            <div className="node-note-fullscreen-shell">
+            <div className="node-note-fullscreen-shell" ref={nodeNoteFullscreenRef} tabIndex={-1}>
               <div className="node-note-fullscreen-header">
                 <div>
                   <p className="panel-title">Node Notes</p>
@@ -4286,6 +4435,7 @@ export default function App() {
           </div>
         ) : null}
       </div>
+      {accessibilityLayer}
     </AppShell>
   );
 }

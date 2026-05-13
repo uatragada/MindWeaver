@@ -1,4 +1,5 @@
 import SelectControl from "../controls/SelectControl.jsx";
+import { LoadingButton } from "../ui/Shell.jsx";
 
 export default function MapStructurePanel({
   mapNameDraft,
@@ -32,13 +33,15 @@ export default function MapStructurePanel({
         <div className="toolbar-inline-form">
           <input
             className="text-input"
+            name="mapName"
+            autoComplete="off"
             placeholder="Untitled map"
             value={mapNameDraft}
             onChange={(event) => onMapNameChange(event.target.value)}
           />
-          <button className="secondary-button" type="button" disabled={isRenamingMap || !hasMapNameChanges} onClick={onSaveMapName}>
-            {isRenamingMap ? "Saving..." : "Save Map Name"}
-          </button>
+          <LoadingButton className="secondary-button" type="button" disabled={!hasMapNameChanges} isLoading={isRenamingMap} loadingLabel="Saving map name" onClick={onSaveMapName}>
+            Save Map Name
+          </LoadingButton>
         </div>
       </div>
       <div className="toolbar-inline-form">
@@ -51,15 +54,17 @@ export default function MapStructurePanel({
         />
         <input
           className="text-input"
+          name="quickAddNodeLabel"
+          autoComplete="off"
           placeholder={quickAddNodeType === "goal"
             ? (primaryGoalNode ? "Add another top-level goal node" : "Add a top-level goal node")
             : `Add a ${quickAddNodeType} node`}
           value={quickAddNodeLabel}
           onChange={(event) => onQuickAddNodeLabelChange(event.target.value)}
         />
-        <button className="primary-button" type="button" disabled={isCreatingNode || !quickAddNodeLabel.trim()} onClick={onCreateNode}>
-          {isCreatingNode ? "Adding..." : `Add ${quickAddNodeType.charAt(0).toUpperCase()}${quickAddNodeType.slice(1)}`}
-        </button>
+        <LoadingButton className="primary-button" type="button" disabled={!quickAddNodeLabel.trim()} isLoading={isCreatingNode} loadingLabel="Adding node" onClick={onCreateNode}>
+          Add {quickAddNodeType.charAt(0).toUpperCase()}{quickAddNodeType.slice(1)}
+        </LoadingButton>
       </div>
       <div className="toolbar-note">
         {primaryGoalNode
@@ -70,14 +75,16 @@ export default function MapStructurePanel({
         <div className="toolbar-note">
           Refine reviews the current map and reorganizes weak, redundant, or misplaced structure without throwing useful information away.
         </div>
-        <button
+        <LoadingButton
           className="secondary-button"
           type="button"
-          disabled={isRefiningMap || !canUseLlm || nodeCount < 2}
+          disabled={!canUseLlm || nodeCount < 2}
+          isLoading={isRefiningMap}
+          loadingLabel="Refining map"
           onClick={onRefineMap}
         >
-          {isRefiningMap ? "Refining..." : "Refine Map"}
-        </button>
+          Refine Map
+        </LoadingButton>
       </div>
       {!canUseLlm ? (
         <div className="toolbar-note">{llmStatusMessage}</div>

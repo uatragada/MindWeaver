@@ -43,6 +43,42 @@ textarea {
 
 button {
   cursor: pointer;
+  touch-action: manipulation;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 100;
+  transform: translateY(calc(-100% - 16px));
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: var(--mw-radius-md);
+  padding: 9px 12px;
+  background: var(--mw-surface-strong);
+  color: var(--mw-text);
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: var(--mw-shadow);
+  transition: transform 0.16s ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 2px;
 }
 
 .page-shell {
@@ -1130,6 +1166,33 @@ button {
   transform: none;
 }
 
+.loading-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.loading-button-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.loading-spinner {
+  flex: 0 0 auto;
+  animation: mw-spin 0.85s linear infinite;
+}
+
+@keyframes mw-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .graph-card {
   position: relative;
   overflow: hidden;
@@ -1431,6 +1494,8 @@ button {
 
 .drawer-backdrop {
   display: none;
+  border: 0;
+  padding: 0;
 }
 
 .drawer-open-left,
@@ -1855,6 +1920,64 @@ button {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.confirm-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+.confirm-dialog {
+  width: min(440px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid var(--mw-border);
+  border-radius: var(--mw-radius-lg);
+  background: var(--mw-surface-strong);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.56);
+}
+
+.confirm-dialog:focus {
+  outline: 2px solid rgba(255, 255, 255, 0.32);
+  outline-offset: 3px;
+}
+
+.confirm-dialog.is-danger {
+  border-color: rgba(255, 77, 77, 0.34);
+}
+
+.confirm-dialog-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.confirm-dialog-copy h2,
+.confirm-dialog-copy p {
+  margin: 0;
+}
+
+.confirm-dialog-copy h2 {
+  font-size: 1.15rem;
+  line-height: 1.2;
+}
+
+.confirm-dialog-copy p:not(.panel-title) {
+  color: var(--mw-muted);
+  line-height: 1.5;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .node-note-fullscreen-overlay {
   position: fixed;
   inset: 0;
@@ -2200,10 +2323,19 @@ select.text-input option:hover {
   background: var(--mw-control-hover);
 }
 
+.select-option.is-active {
+  background: var(--mw-control-hover);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
 .select-option.is-selected {
   background: var(--mw-control-selected);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
   color: var(--mw-text);
+}
+
+.select-option.is-selected.is-active {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
 }
 
 /* SelectControls inside the topbar should be auto-width, not 100% */
@@ -3544,6 +3676,14 @@ textarea:focus-visible,
     padding: 8px 12px;
   }
 
+  .drawer-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 22;
+    display: block;
+    background: rgba(0, 0, 0, 0.34);
+  }
+
   .top-command-bar .topbar-search-section,
   .top-command-bar .topbar-filter-section {
     flex: 1 1 100%;
@@ -3628,6 +3768,29 @@ textarea:focus-visible,
 
   .metric-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .confirm-dialog-overlay {
+    align-items: end;
+    padding: 14px;
+  }
+
+  .confirm-dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 
