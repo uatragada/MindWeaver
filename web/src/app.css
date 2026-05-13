@@ -28,6 +28,15 @@ body,
   font-size: 16px;
 }
 
+html {
+  color-scheme: dark;
+}
+
+body {
+  font-variant-numeric: tabular-nums;
+  -webkit-tap-highlight-color: rgba(255, 255, 255, 0.12);
+}
+
 *,
 *::before,
 *::after {
@@ -39,6 +48,7 @@ input,
 select,
 textarea {
   font: inherit;
+  touch-action: manipulation;
 }
 
 button {
@@ -63,6 +73,9 @@ button {
   top: 10px;
   left: 10px;
   z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   transform: translateY(calc(-100% - 16px));
   border: 1px solid rgba(255, 255, 255, 0.24);
   border-radius: var(--mw-radius-md);
@@ -87,6 +100,13 @@ button {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+h1,
+h2,
+h3,
+[id] {
+  scroll-margin-top: 84px;
 }
 
 .page-shell.is-workspace {
@@ -4255,5 +4275,79 @@ textarea:focus-visible,
 
   .home-context-list > div span {
     grid-column: 2;
+  }
+}
+
+/* Agents.md target and mobile form hardening */
+.top-command-bar .topbar-search-input {
+  min-height: 24px;
+}
+
+.top-command-bar .topbar-target-pill {
+  min-height: 28px;
+}
+
+select,
+select.text-input,
+textarea,
+input {
+  background-color: rgba(255, 255, 255, 0.055);
+  color: var(--mw-text);
+}
+
+@media (max-width: 760px) {
+  input,
+  textarea,
+  select,
+  .text-input,
+  .text-area,
+  .select-trigger,
+  .topbar-new-input,
+  .topbar-search-input,
+  .map-tab-input {
+    font-size: 16px;
+  }
+
+  button,
+  .icon-button,
+  .small-button,
+  .primary-button,
+  .secondary-button,
+  .ghost-button,
+  .danger-button,
+  .select-trigger,
+  .select-option,
+  .workspace-nav-item,
+  .map-home-tab,
+  .map-tab-close,
+  .map-tabs-toggle,
+  .home-start-actions .jumbo-button,
+  .home-section-header .small-button,
+  .top-command-bar .topbar-btn,
+  .top-command-bar .topbar-fit-btn,
+  .top-command-bar .topbar-new-btn {
+    min-height: 44px;
+  }
+
+  .icon-button,
+  .top-command-bar .topbar-home,
+  .top-command-bar .topbar-new-btn,
+  .top-command-bar .topbar-fit-btn,
+  .map-tab-close,
+  .map-tabs-toggle,
+  .drawer-open-left,
+  .drawer-open-right {
+    min-width: 44px;
+  }
+
+  .icon-button,
+  .top-command-bar .topbar-home,
+  .top-command-bar .topbar-new-btn,
+  .top-command-bar .topbar-fit-btn {
+    width: 44px;
+  }
+
+  .page-shell:not(.is-workspace) .map-home-tab {
+    min-height: 44px;
   }
 }

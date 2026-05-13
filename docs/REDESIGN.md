@@ -40,3 +40,9 @@
 - Targeted topbar regression: passing with no overflow, no clipped controls, no oversized radii, and no console warnings at 1440px and 390px in `output/playwright/topbar-regression-2026-05-07T17-51-57-716Z/`.
 - Opening page visual QA: in-app browser smoke passed for All Maps, AI Provider, Start A Knowledge Map, and Try A Demo Map. Scripted Playwright QA passed with 7 screenshots in `output/playwright/homepage-qa-2026-05-07T23-40-04-437Z/`, covering desktop/tablet/mobile layouts, provider menu and switch/restore, start-map and demo-map flows with API cleanup, recent-map opening, no body overflow, no clipped visible controls, no oversized homepage radii, no unlabeled icon buttons, no console warnings/errors, and no hard-coded hex colors in the new opening-page CSS block.
 - Minimal opening page QA: in-app browser smoke passed for page identity, meaningful content, AI provider, start map, demo map, and console health. Scripted Playwright QA passed with 6 screenshots in `output/playwright/minimal-home-qa-2026-05-08T02-51-12-788Z/`, covering desktop/tablet/mobile layouts, provider menu and switch/restore, start-map and demo-map flows with API cleanup, recent-map opening, no body overflow, no clipped controls, no oversized homepage radii, no console warnings/errors, and no hard-coded hex colors in the opening-page CSS block.
+
+### 2026-05-13 Agents.md Merge QA
+
+- Merged the redesign branch into `main` as a fast-forward so the visual redesign commits remain intact and traceable.
+- Restored the root `npm run qa:agents` interface backed by `scripts/qa-agents.mjs`; generated QA artifacts remain under ignored `output/playwright/`.
+- Verification on `main`: `npm --prefix web test`, `npm test`, `npm run test:extension:unit`, `npm run build`, and `npm run qa:agents` passed.
