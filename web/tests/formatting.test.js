@@ -4,6 +4,7 @@ import {
   describeReviewDate,
   formatSourceTypeLabel,
   getMapName,
+  getSafeExternalHref,
   getSafeFileName,
   groupVerificationResults
 } from "../src/lib/formatting.js";
@@ -30,6 +31,15 @@ test("groupVerificationResults buckets answers by correctness", () => {
 test("getSafeFileName normalizes map exports", () => {
   assert.equal(getSafeFileName("  My MindWeaver Map!!! "), "my-mindweaver-map");
   assert.equal(getSafeFileName(""), "mindweaver-map");
+});
+
+test("getSafeExternalHref only allows absolute http URLs", () => {
+  assert.equal(getSafeExternalHref("https://example.com/path?q=1"), "https://example.com/path?q=1");
+  assert.equal(getSafeExternalHref(" http://example.com/path "), "http://example.com/path");
+  assert.equal(getSafeExternalHref("javascript:alert(1)"), null);
+  assert.equal(getSafeExternalHref("data:text/html,<script>alert(1)</script>"), null);
+  assert.equal(getSafeExternalHref("mindweaver://demo/source"), null);
+  assert.equal(getSafeExternalHref("/relative/path"), null);
 });
 
 test("getMapName prefers the stored session goal but falls back cleanly", () => {

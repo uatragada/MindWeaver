@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { rateLimit } from "express-rate-limit";
 import { nanoid } from "nanoid";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -83,6 +84,13 @@ export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, stati
   const app = express();
   const defaultJsonParser = express.json({ limit: "2mb" });
   const restoreJsonParser = express.json({ limit: "50mb" });
+  const requestLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 600,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: "Too many requests. Please wait a moment and try again." }
+  });
   const enqueuePageSave = createSequentialTaskQueue();
   const buildRequestLlmRuntime = (rawSelection) => ({
     openaiClient,
@@ -102,6 +110,7 @@ export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, stati
       return callback(null, isAllowedCorsOrigin(origin));
     }
   }));
+  app.use(requestLimiter);
   app.use((req, res, next) => {
     if (req.method === "POST" && req.path === "/api/restore") {
       restoreJsonParser(req, res, next);

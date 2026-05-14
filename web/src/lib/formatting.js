@@ -51,6 +51,18 @@ export function downloadTextFile(content, fileName, mimeType) {
   URL.revokeObjectURL(url);
 }
 
+export function getSafeExternalHref(value) {
+  const rawValue = String(value ?? "").trim();
+  if (!rawValue) return null;
+
+  try {
+    const url = new URL(rawValue);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export function formatSourceTypeLabel(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (!normalized) return "page";

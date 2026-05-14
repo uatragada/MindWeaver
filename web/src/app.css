@@ -2597,6 +2597,14 @@ select.text-input option:hover {
   color: #ffffff;
 }
 
+.evidence-link-static {
+  cursor: default;
+}
+
+.evidence-link-static:hover strong {
+  color: inherit;
+}
+
 .scroll-panel {
   overflow-y: auto;
 }

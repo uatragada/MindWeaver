@@ -131,6 +131,7 @@ import {
   formatSourceTypeLabel,
   formatTimestamp,
   getMapName,
+  getSafeExternalHref,
   getSafeFileName,
   groupVerificationResults
 } from "./lib/formatting.js";
@@ -4385,19 +4386,34 @@ export default function App() {
                   </div>
                 </div>
                 <div className="evidence-list inspector-evidence-card">
-                  {selectedNode.sources?.length ? selectedNode.sources.map((source) => (
-                    <div key={`${source.artifactId ?? source.url}-${source.sessionId}`} className="evidence-item">
-                      <a className="evidence-link" href={source.url} target="_blank" rel="noreferrer">
+                  {selectedNode.sources?.length ? selectedNode.sources.map((source) => {
+                    const safeHref = getSafeExternalHref(source.url);
+                    const evidenceBody = (
+                      <>
                         <strong>{source.title}</strong>
                         <div className="muted-copy">{formatSourceTypeLabel(source.sourceType)} • {source.url}</div>
-                      </a>
-                      {source.artifactId ? (
-                        <button className="small-button is-reject" type="button" disabled={isDeletingArtifact} onClick={() => handleDeleteArtifact(source.artifactId)}>
-                          Remove Source
-                        </button>
-                      ) : null}
-                    </div>
-                  )) : <div className="queue-item"><h3>No evidence yet</h3><div className="queue-meta">This node exists in the graph, but no direct source evidence has been attached yet.</div></div>}
+                      </>
+                    );
+
+                    return (
+                      <div key={`${source.artifactId ?? source.url}-${source.sessionId}`} className="evidence-item">
+                        {safeHref ? (
+                          <a className="evidence-link" href={safeHref} target="_blank" rel="noopener noreferrer">
+                            {evidenceBody}
+                          </a>
+                        ) : (
+                          <div className="evidence-link evidence-link-static">
+                            {evidenceBody}
+                          </div>
+                        )}
+                        {source.artifactId ? (
+                          <button className="small-button is-reject" type="button" disabled={isDeletingArtifact} onClick={() => handleDeleteArtifact(source.artifactId)}>
+                            Remove Source
+                          </button>
+                        ) : null}
+                      </div>
+                    );
+                  }) : <div className="queue-item"><h3>No evidence yet</h3><div className="queue-meta">This node exists in the graph, but no direct source evidence has been attached yet.</div></div>}
                 </div>
               </div>
             ) : (
