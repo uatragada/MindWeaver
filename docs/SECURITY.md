@@ -62,6 +62,8 @@ This skip logic is a guardrail, not a guarantee. Users should still avoid saving
 
 AI calls are made from the local server, not from the browser extension or web client. OpenAI requests leave the machine only when OpenAI is the selected provider. Local/Ollama requests stay on-device, and structured local JSON is schema-validated on the server before it is used to mutate the graph.
 
+Gap analysis, quiz generation, and source classification keep stored goals, concept labels, and graph context in user messages. Their system messages contain application instructions only. Imported or restored graph text must keep the same data role; input normalization alone does not prevent prompt injection. Both provider paths have regression tests for this boundary. This separation does not guarantee that a model will ignore every instruction embedded in source content.
+
 Current limits:
 
 - extension page text extraction: up to the selected provider's source limit (16,000 characters for OpenAI, 128,000 for Local/Ollama),
@@ -70,6 +72,22 @@ Current limits:
 - local import payload validation: up to 80,000 characters for OpenAI and 128,000 for Local/Ollama.
 
 Do not import data you are not comfortable sending to the configured OpenAI account when OpenAI is selected.
+
+## Dependency Maintenance
+
+Audit all three lockfiles, including development dependencies:
+
+```bash
+npm audit
+npm --prefix server audit
+npm --prefix web audit
+```
+
+The desktop build uses Electron 45 and requires Node.js 22.12 or newer. Root overrides update ASAR and the universal packager together so their matcher calls support minimatch 11. Modern glob consumers use glob 14. The legacy `temp` dependency uses a scoped adapter to Node's literal-path removal API, preserving its callback and synchronous cleanup behavior without glob 7's incompatible matcher internals. Keep these overrides together until electron-builder adopts patched versions. Run `npm run test:packaging` and verify Windows packaging when changing them.
+
+Desktop packaging includes server runtime code and production dependencies. Local server configuration, databases, tests, and fixtures are outside that file list. Configure API keys on the machine running the app through its environment.
+
+Dependabot alert #145 references the withdrawn advisory [GHSA-hp3w-g68c-fv3c](https://github.com/advisories/GHSA-hp3w-g68c-fv3c) for sprintf-js. GitHub withdrew it on October 22, 2026 because exception handling belongs to the calling application. It has no patched release and is excluded from npm's active audit findings. Its status is documented here rather than dismissed as part of the dependency update.
 
 ## Backup And Restore
 

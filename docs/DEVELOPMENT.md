@@ -4,7 +4,8 @@ This guide covers local setup, common workflows, verification, and release hygie
 
 ## Prerequisites
 
-- Node.js and npm.
+- Node.js 22.12+ and npm 10+.
+- Electron 45 downloads its desktop binary on first use. The first desktop launch or build needs network access unless that binary is already cached.
 - Chrome or Chromium for the unpacked extension.
 - Either an OpenAI API key or a local Ollama install for AI-backed classification and learning features.
 
@@ -138,6 +139,8 @@ npm run eval:fixtures
 ```
 
 ## Production-Style Smoke Test
+
+On Windows, verify desktop dependency changes with `npm run test:packaging` and `npm run electron:build`. The cleanup test exercises the installed packaging dependency's callback and synchronous APIs.
 
 1. Run `npm run build`.
 2. Run `npm run start`.
