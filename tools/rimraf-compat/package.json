@@ -1,0 +1,10 @@
+{
+  "name": "rimraf",
+  "version": "2.6.3-mindweaver.1",
+  "private": true,
+  "description": "Literal-path cleanup adapter for electron-winstaller's legacy temp dependency.",
+  "main": "index.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
