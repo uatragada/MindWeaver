@@ -76,6 +76,14 @@ const {
   validateChatHistoryImportPayload,
   validateIngestPayload
 } = services;
+/**
+ * Creates the local API and optional static UI around an initialized store.
+ * Stored graph and source text must remain user data in downstream AI prompts.
+ * The caller owns the listener and database lifetime.
+ * @param {object} options Database, optional AI clients, and static UI location.
+ * @param {object} options.db Initialized MindWeaver database.
+ * @returns {import("express").Express} Configured application, without a listener.
+ */
 export function createApp({ db, openaiClient = null, ollamaBaseUrl = null, staticDir = null } = {}) {
   if (!db) throw new Error("createApp requires a db instance");
   db.data = sanitizeDataShape(db.data);

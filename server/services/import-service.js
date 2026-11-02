@@ -596,6 +596,13 @@ function createDemoSession(db) {
   return session;
 }
 
+/**
+ * Stores a source and attaches schema-validated classifications to its map.
+ * Source text and existing graph context stay in user messages. Local requests
+ * may retry with shorter excerpts; unavailable AI leaves the artifact stored.
+ * @param {object} options Database, selected AI runtime, and validated payload.
+ * @returns {Promise<object>} HTTP status and response body for the import.
+ */
 async function ingestSource({ db, llmRuntime, payload }) {
   const sessionId = String(payload.sessionId).trim();
   const session = getSession(db, sessionId);

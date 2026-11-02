@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, writeFile, access, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, access, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const require = createRequire(import.meta.url);
@@ -26,6 +26,16 @@ test("packaging cleanup removes tracked temporary trees with both legacy APIs", 
       await assert.rejects(access(directory), { code: "ENOENT" });
       const empty = synchronous ? temp.cleanupSync() : await promisify(temp.cleanup)();
       assert.equal(empty.dirs, 0);
+
+      const missing = synchronous ? temp.mkdirSync(options) : await promisify(temp.mkdir)(options);
+      assert.equal(resolve(dirname(missing)), resolve(root));
+      await rm(missing, { recursive: true, force: true });
+      const sibling = join(root, basename(missing).replace("[one]", "o"));
+      await mkdir(sibling);
+      await writeFile(join(sibling, "keep.txt"), "untracked sibling");
+      const missingResult = synchronous ? temp.cleanupSync() : await promisify(temp.cleanup)();
+      assert.equal(missingResult.dirs, 1);
+      assert.equal(await readFile(join(sibling, "keep.txt"), "utf8"), "untracked sibling");
     }
   } finally {
     const resolvedRoot = resolve(root);
